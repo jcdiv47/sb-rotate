@@ -10,6 +10,35 @@ The initial target is **sing-box 1.14+** with first-class support for:
 
 The tool intentionally does not model the complete sing-box schema. It understands only the fields it needs, uses the installed `sing-box` binary to generate supported credentials/key material, and uses `sing-box check` as the final config validator.
 
+## Implementation status
+
+The first implementation supports:
+
+- `inspect`: VLESS/Hysteria2 service and identity discovery, selectors, unmatched identities, and ambiguity reporting;
+- `check`: server file/config-directory validation and independent client validation;
+- `plan` / `rotate`: `vless-uuid` and `hysteria2-password`, including all discovered occurrences of a shared identity;
+- masked password output, staged validation, permission-preserving file replacement, and rollback on ordinary replacement failures.
+
+Reality operations, Hysteria2 obfs rotation, and service-property `set` are **not implemented yet**. The specification and examples below describe the full intended v1 interface.
+
+### Build and test
+
+```bash
+cargo build --release
+cargo test
+cargo clippy --all-targets -- -D warnings
+./target/release/sb-rotate --help
+```
+
+A Rust toolchain supporting edition 2024 is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Tests use controlled generators/validators and do not require sing-box to be installed.
+
+### Safety and current limitations
+
+- Supply every client that must stay synchronized. The tool cannot update clients it has not been given. With `--clients`, `--client` narrows selection but does not remove other discovered occurrences of a shared identity.
+- `plan` generates fresh values in memory without writing config files. `rotate` generates a new plan, validates the staged server set and changed clients, then replaces originals. Unchanged files are not rewritten.
+- Keep backups and avoid concurrent config writers. Changes detected before commit are rejected, and ordinary replacement failures trigger rollback. Replacements are atomic **per file**, not across files under power loss/process termination; crash recovery and cross-process locking are not implemented. If rollback itself fails, the error reports retained recovery copies.
+- Files are strict JSON; changed files are reserialized. Validation uses the command's working directory for relative resource paths. sing-box validation diagnostics are forwarded verbatim and may contain config values.
+
 ## Core model
 
 `sb-rotate` discovers a server **service binding** and the client outbounds that belong to it.
