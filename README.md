@@ -25,6 +25,24 @@ Shared identities rotate across every discovered occurrence. Short-ID rotation a
 
 `set --kind server-ports --value 20000:30000,40000` switches bound Hysteria2 outbounds to port hopping, removes their scalar `server_port`, and writes `["20000:30000", "40000:40000"]` (sing-box requires range syntax). `server-port` rejects port-hopping outbounds rather than silently switching them back.
 
+### Install on Linux (x86-64)
+
+Download a prebuilt binary from [GitHub Releases](https://github.com/jcdiv47/sb-rotate/releases). Rust is not required on the server; operational commands other than `recover` still require sing-box >=1.14.0.
+
+```bash
+base="https://github.com/jcdiv47/sb-rotate/releases/download/v0.1.0"
+curl -fLO "$base/sb-rotate-linux-amd64.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum --check SHA256SUMS && \
+  tar -xzf sb-rotate-linux-amd64.tar.gz && \
+  sudo install -m 755 sb-rotate /usr/local/bin/sb-rotate
+sb-rotate --help
+```
+
+This musl build targets `x86_64` Linux (check with `uname -m`), not ARM64.
+
+Maintainers: update the version in `Cargo.toml` and `Cargo.lock`, commit it, then push a matching `v*` tag (for example, `v0.1.0`). The release workflow tests and builds the Linux binary and publishes an archive and SHA-256 checksum to GitHub Releases.
+
 ### Build and test
 
 ```bash
