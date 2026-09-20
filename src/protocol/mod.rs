@@ -24,7 +24,7 @@ pub(crate) fn one_service<'a>(
     if !client_selectable {
         ensure!(
             input.client.is_empty() && input.client_tag.is_empty(),
-            "service-wide operations reject --client and --client-tag; supply all clients with --clients and select the service with --inbound-tag"
+            "service-wide operations reject --client and --outbound-tag (--client-tag); supply all client configs with --clients and select the inbound with --inbound-tag"
         );
     }
     for candidate in [Protocol::Vless, Protocol::Hysteria2] {

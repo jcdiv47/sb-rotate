@@ -11,26 +11,31 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Discover service and identity bindings (passwords are masked).
+    /// Discover inbounds, users, and bound outbounds (passwords are masked).
     Inspect {
         #[command(flatten)]
         input: Input,
-        #[arg(long, value_enum)]
+        #[arg(
+            long = "type",
+            visible_alias = "protocol",
+            value_enum,
+            value_name = "TYPE"
+        )]
         protocol: Option<Protocol>,
     },
     /// Generate and display a rotation without writing configs.
     Plan {
         #[command(flatten)]
         input: Input,
-        #[arg(long, value_enum)]
-        kind: RotationKind,
+        #[command(flatten)]
+        selection: RotationSelection,
     },
-    /// Rotate an identity, Reality short IDs/keypair, or a shared obfs secret.
+    /// Rotate configured credentials/key material for a sing-box type.
     Rotate {
         #[command(flatten)]
         input: Input,
-        #[arg(long, value_enum)]
-        kind: RotationKind,
+        #[command(flatten)]
+        selection: RotationSelection,
     },
     /// Update a service property on every bound client (never the listen port).
     Set {
@@ -85,19 +90,75 @@ pub struct Input {
     /// Server JSON file or config directory.
     #[arg(long)]
     pub server: PathBuf,
-    /// Directory of independent client JSON files (non-recursive).
-    #[arg(long, required_unless_present = "client")]
+    /// Local directory of independent client JSON configs (non-recursive; no deployment).
+    #[arg(
+        long,
+        visible_alias = "client-config-dir",
+        required_unless_present = "client"
+    )]
     pub clients: Option<PathBuf>,
     /// Include/select a client file; repeatable. Shared identities still rotate together.
     #[arg(long = "client")]
     pub client: Vec<PathBuf>,
     #[arg(long)]
     pub inbound_tag: Vec<String>,
-    #[arg(long)]
+    /// Select outbound tags; shared user credentials still rotate together.
+    #[arg(
+        long = "outbound-tag",
+        visible_alias = "client-tag",
+        value_name = "TAG"
+    )]
     pub client_tag: Vec<String>,
     /// Executable override; otherwise SING_BOX, then sing-box on PATH.
     #[arg(long)]
     pub sing_box: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct RotationSelection {
+    /// Rotate all supported material already configured with bound outbounds for this type.
+    #[arg(
+        long = "type",
+        value_enum,
+        value_name = "TYPE",
+        required_unless_present = "kind",
+        conflicts_with = "kind"
+    )]
+    pub protocol: Option<Protocol>,
+    /// Rotate only this material (requires --type). UUID/password/short-ID allow outbound selection.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MATERIAL",
+        requires = "protocol",
+        conflicts_with = "kind"
+    )]
+    pub only: Option<RotationMaterial>,
+    /// Legacy single-operation interface; cannot be combined with --type/--only.
+    #[arg(long, value_enum, required_unless_present = "protocol")]
+    pub kind: Option<RotationKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RotationMaterial {
+    Uuid,
+    Password,
+    RealityShortId,
+    RealityKeypair,
+    ObfsPassword,
+}
+
+impl RotationMaterial {
+    pub fn kind(self, protocol: Protocol) -> Option<RotationKind> {
+        match (protocol, self) {
+            (Protocol::Vless, Self::Uuid) => Some(RotationKind::VlessUuid),
+            (Protocol::Vless, Self::RealityShortId) => Some(RotationKind::VlessRealityShortId),
+            (Protocol::Vless, Self::RealityKeypair) => Some(RotationKind::VlessRealityKeypair),
+            (Protocol::Hysteria2, Self::Password) => Some(RotationKind::Hysteria2Password),
+            (Protocol::Hysteria2, Self::ObfsPassword) => Some(RotationKind::Hysteria2ObfsPassword),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

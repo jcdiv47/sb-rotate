@@ -16,12 +16,12 @@ Currently supported:
 
 - `inspect`: VLESS/Hysteria2 service and identity discovery, selectors, unmatched identities, ambiguity reporting, and Reality accepted/observed short-ID counts;
 - `check`: server file/config-directory validation and independent client validation;
-- `plan` / `rotate`: `vless-uuid`, `hysteria2-password`, `vless-reality-short-id`, `vless-reality-keypair`, and `hysteria2-obfs-password`;
+- `plan` / `rotate`: type-wide rotation with `--type vless|hysteria2`, optional `--only` material selection, and the legacy `--kind` interface;
 - `set`: `server`, `server-port`, `server-ports`, and `tls-server-name`, with `--dry-run` for a read-only preview;
 - `recover`: preview or roll back an interrupted multi-file transaction without needing sing-box;
 - masked passwords, private keys, and short IDs; staged validation, permission-preserving replacement, durable rollback journals, and automatic rollback on ordinary replacement failures.
 
-Shared identities rotate across every discovered occurrence. Short-ID rotation assigns an independent ID to each selected Reality outbound, retains IDs needed by unselected clients, and preserves unattributed accepted IDs. Whole-service operations require a single matching service (use `--inbound-tag` to disambiguate), reject `--client` / `--client-tag`, and use `--clients` to supply the client inventory. They do not edit server listen addresses/ports or automatically enable TLS/obfs.
+Shared user credentials rotate across every discovered occurrence. Short-ID rotation assigns an independent ID to each selected Reality outbound, retains IDs needed by unselected clients, and preserves unattributed accepted IDs. Type-wide rotation combines all matching inbounds into one validated, recoverable transaction. All-material and whole-inbound secret rotations reject `--client` / `--outbound-tag`; use `--clients` for the inventory and `--inbound-tag` to narrow the scope. Legacy `--kind` whole-service rotations and `set` still require one matching inbound. Operations do not edit server listen addresses/ports or automatically enable TLS/obfs.
 
 `set --kind server-ports --value 20000:30000,40000` switches bound Hysteria2 outbounds to port hopping, removes their scalar `server_port`, and writes `["20000:30000", "40000:40000"]` (sing-box requires range syntax). `server-port` rejects port-hopping outbounds rather than silently switching them back.
 
@@ -112,32 +112,43 @@ Reality `short_id` is a special client-selectable operation: the server accepts 
 
 ## Example commands
 
+`--clients ./clients/` supplies a local directory of independent sing-box client JSON configs (direct `.json` files only). Each config may contain multiple outbounds, including several of the same type. The tool updates local files; it does not connect to devices or deploy/reload configs. `--client-config-dir` is an alias.
+
+Without `--only`, `--type vless` rotates matched user UUIDs plus enabled Reality keypairs and short IDs; `--type hysteria2` rotates matched user passwords plus configured obfs passwords. Only material with bound outbounds is rotated: unmatched users/outbounds remain unchanged, and unattributed accepted short IDs are retained. TLS certificates and connection properties are not rotated. Supply every client config that must stay synchronized.
+
+Supported `--only` values:
+
+| Type | Material |
+|---|---|
+| `vless` | `uuid`, `reality-keypair`, `reality-short-id` |
+| `hysteria2` | `password`, `obfs-password` |
+
 ```bash
-# Discover bindings.
-sb-rotate inspect --server ./server.json --clients ./clients/
+# Discover inbounds, users, and outbounds of a sing-box type.
+sb-rotate inspect --server ./server.json --clients ./clients/ --type vless
 
-# Preview changes.
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
+# Preview all supported, configured VLESS material.
+sb-rotate plan --server ./server.json --clients ./clients/ --type vless
 
-# Rotate all matched VLESS UUID identity bindings.
+# Rotate it across every matching inbound and bound outbound.
+sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
+
+# Rotate UUIDs only, selecting through one outbound tag.
+# All discovered occurrences of its shared UUID still rotate together.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
+  --type vless --only uuid --outbound-tag home
 
 # Rotate Reality short_id for one client outbound.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json \
-  --client-tag home
+  --type vless --only reality-short-id \
+  --client ./clients/phone.json --outbound-tag home
 
-# Rotate a Reality keypair for one VLESS service.
+# Rotate a Reality keypair for one inbound and all its bound Reality outbounds.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-keypair \
-  --inbound-tag vless-home
+  --type vless --only reality-keypair --inbound-tag vless-home
 
-# Rotate Hysteria2 passwords.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password
+# Rotate Hysteria2 user passwords and configured obfs passwords.
+sb-rotate rotate --server ./server.json --clients ./clients/ --type hysteria2
 
 # Change the public server address used by every client in a service.
 sb-rotate set --server ./server.json --clients ./clients/ \
@@ -152,6 +163,8 @@ sb-rotate check --server ./server.json --clients ./clients/
 sb-rotate inspect --server ./server.json --clients ./clients/ \
   --sing-box /opt/sing-box/bin/sing-box
 ```
+
+Compatibility: existing `--kind` commands still work (do not combine them with `--type`/`--only`). `--client-tag` remains an alias for `--outbound-tag`, and `inspect --protocol` remains an alias for `inspect --type`. Tags are selectors, not globally unique IDs; use `--client` with an identity/short-ID operation to distinguish the same tag in different files. Ambiguous inbound matches are rejected, not guessed.
 
 Binary resolution order:
 

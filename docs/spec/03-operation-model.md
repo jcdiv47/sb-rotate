@@ -19,6 +19,16 @@ Encoding these through generic metadata such as `relation = equality|membership|
 
 Instead, each protocol adapter implements small operation planners that return a generic `RotationPlan`.
 
+## Type-driven composition
+
+`plan` and `rotate --type vless|hysteria2` compose the applicable operations below into one plan against the original inventory. UUID/user-password rotation runs across all selected matched users; each eligible inbound contributes its configured Reality keypair/short-ID or obfs edits. Each inbound's shared secret is generated independently. `--only` restricts the composition to a single material kind but still supports multiple inbounds.
+
+The combined plan is materialized, staged, validated, and committed once. Any planning/generation or staged-validation failure prevents all replacements. Existing per-file atomicity and recovery rules still apply. Discovery ambiguity is checked before splitting work by inbound, so batching never resolves an ambiguous match implicitly.
+
+All-material rotation and shared-inbound secret rotation reject client/outbound narrowing. User credentials and short IDs remain client-selectable via `--only`. Optional features are not enabled, unmatched identities/outbounds are not changed, and unattributed accepted short IDs are preserved. See [CLI semantics](06-cli.md#type-driven-rotation).
+
+Legacy `--kind` uses the original single-operation planners; its service-level operations still require one inbound.
+
 ## Operation classes
 
 ### Identity rotation

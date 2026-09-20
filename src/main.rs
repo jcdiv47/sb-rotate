@@ -40,7 +40,7 @@ fn run(cli: Cli) -> Result<()> {
     if matches!(cli.command, Command::Check { .. }) {
         ensure!(
             input.inbound_tag.is_empty() && input.client_tag.is_empty(),
-            "check validates complete configs; --inbound-tag and --client-tag are not supported"
+            "check validates complete configs; --inbound-tag and --outbound-tag (--client-tag) are not supported"
         );
         apply::check(&configs, &singbox)?;
         println!(
@@ -54,8 +54,24 @@ fn run(cli: Cli) -> Result<()> {
         Command::Inspect { protocol, .. } => {
             println!("{}", inventory.render(&configs, input, *protocol))
         }
-        Command::Plan { kind, .. } | Command::Rotate { kind, .. } => {
-            let plan = plan::rotation(&configs, &inventory, input, *kind, &singbox)?;
+        Command::Plan { selection, .. } | Command::Rotate { selection, .. } => {
+            let plan = match selection.protocol {
+                Some(protocol) => plan::rotation_by_type(
+                    &configs,
+                    &inventory,
+                    input,
+                    protocol,
+                    selection.only,
+                    &singbox,
+                )?,
+                None => plan::rotation(
+                    &configs,
+                    &inventory,
+                    input,
+                    selection.kind.context("--type or --kind required")?,
+                    &singbox,
+                )?,
+            };
             // Validate edit topology for previews too; plan never creates config files.
             plan.materialize(&configs)?;
             println!("{}", plan.render());

@@ -1,5 +1,38 @@
 # Example Command Reference
 
+## Preferred type-driven workflow
+
+```bash
+# --clients is a local directory of independent sing-box client configs.
+# Each file can contain several outbounds of the same type.
+sb-rotate inspect --server ./server.json --clients ./clients/ --type vless
+sb-rotate plan --server ./server.json --clients ./clients/ --type vless
+sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
+
+# All matched Hysteria2 user passwords and configured obfs passwords.
+sb-rotate rotate --server ./server.json --clients ./clients/ --type hysteria2
+
+# One inbound, including its configured shared key material.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type vless --inbound-tag vless-home
+
+# Only UUIDs selected through the home outbound in phone.json.
+# Every supplied occurrence sharing its user credential rotates together.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type vless --only uuid \
+  --client ./clients/phone.json --outbound-tag home
+
+# Keypairs across every matched Reality inbound.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type vless --only reality-keypair
+```
+
+`--type vless` includes UUIDs and enabled Reality keypairs/short IDs; it does not rotate certificates or enable optional features. All-material/keypair/obfs rotation rejects client/outbound selectors; use `--inbound-tag` to narrow it instead. Plans span all matching inbounds and are applied as one validated, recoverable transaction. Unmatched users/outbounds and unattributed accepted short IDs are retained. Nothing is remotely deployed or reloaded.
+
+Allowed `--only` values are `uuid`, `reality-keypair`, `reality-short-id` for VLESS, and `password`, `obfs-password` for Hysteria2. `--client-config-dir` aliases `--clients`.
+
+The commands below also demonstrate the compatible legacy interface. `--kind` cannot be combined with `--type`/`--only`; its service-level operations still require one matching inbound. Prefer `--outbound-tag` over its alias `--client-tag`, and `inspect --type` over its alias `--protocol`.
+
 ## Inspect
 
 ```bash

@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 
 use crate::{
-    binding::Inventory,
+    binding::{Inventory, ServiceBinding},
     cli::{Input, Protocol, RotationKind},
     config::ConfigSet,
     plan::{OperationKind, RotationPlan},
@@ -24,6 +24,14 @@ pub fn obfs_password(
         false,
         |_| true,
     )?;
+    obfs_password_for_service(configs, service, singbox)
+}
+
+pub(crate) fn obfs_password_for_service(
+    configs: &ConfigSet,
+    service: &ServiceBinding,
+    singbox: &impl SingBox,
+) -> Result<RotationPlan> {
     let obfs_type = string_field(configs, &service.inbound, "obfs/type")?;
     ensure!(
         !obfs_type.is_empty(),

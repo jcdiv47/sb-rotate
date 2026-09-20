@@ -222,11 +222,72 @@ fn real_generators_validation_and_service_operations() -> Result<()> {
         );
     }
     successful(run("check", &[])?)?;
+    // Add a second inbound of each type and a matching outbound in each client.
+    // Type-wide rotation must compose every material across both inbounds.
+    let second_uuid = singbox.generate_uuid()?;
+    let mut server = read(&server_path)?;
+    for (index, tag, field, value) in [
+        (0, "vless-office", "uuid", second_uuid.as_str()),
+        (1, "hy2-office", "password", "second-auth"),
+    ] {
+        let mut inbound = server["inbounds"][index].clone();
+        inbound["tag"] = json!(tag);
+        inbound["listen_port"] = json!(18543 + index);
+        inbound["users"][0][field] = json!(value);
+        server["inbounds"].as_array_mut().unwrap().push(inbound);
+        for path in [&phone_path, &laptop_path] {
+            let mut client = read(path)?;
+            let mut outbound = client["outbounds"][index].clone();
+            outbound["tag"] = json!(tag);
+            outbound[field] = json!(value);
+            client["outbounds"].as_array_mut().unwrap().push(outbound);
+            write(path, &client)?;
+        }
+    }
+    write(&server_path, &server)?;
+    successful(run("check", &[])?)?;
+    for (kind, indices, field, secret) in [
+        ("vless", [0, 2], "uuid", "/tls/reality/private_key"),
+        ("hysteria2", [1, 3], "password", "/obfs/password"),
+    ] {
+        let before = snapshot()?;
+        successful(run("plan", &["--type", kind])?)?;
+        assert_eq!(before, snapshot()?);
+        successful(run("rotate", &["--type", kind])?)?;
+        successful(run("check", &[])?)?;
+        let updated = read(&server_path)?;
+        assert_ne!(
+            updated["inbounds"][indices[0]].pointer(secret),
+            updated["inbounds"][indices[1]].pointer(secret)
+        );
+        for index in indices {
+            let inbound = &updated["inbounds"][index];
+            assert_ne!(
+                inbound.pointer(secret),
+                server["inbounds"][index].pointer(secret)
+            );
+            for path in [&phone_path, &laptop_path] {
+                let client = read(path)?;
+                let outbound = &client["outbounds"][index];
+                assert_eq!(inbound["users"][0][field], outbound[field]);
+                if kind == "vless" {
+                    assert!(
+                        inbound["tls"]["reality"]["short_id"]
+                            .as_array()
+                            .unwrap()
+                            .contains(&outbound["tls"]["reality"]["short_id"])
+                    );
+                } else {
+                    assert_eq!(inbound["obfs"]["password"], outbound["obfs"]["password"]);
+                }
+            }
+        }
+    }
     let mut invalid = read(&server_path)?;
     invalid["inbounds"][0]["listen_port"] = json!("invalid-port");
     write(&server_path, &invalid)?;
     let before = snapshot()?;
-    let failed = run("rotate", &["--kind", "vless-reality-keypair"])?;
+    let failed = run("rotate", &["--type", "vless"])?;
     assert!(!failed.status.success());
     assert!(String::from_utf8_lossy(&failed.stderr).contains("validating"));
     assert_eq!(

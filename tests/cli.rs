@@ -122,6 +122,167 @@ fn success(output: Output) -> String {
 }
 
 #[test]
+fn type_rotation_previews_and_commits_all_reality_material_together() {
+    let fixture = Fixture::new("1.14.0");
+    fixture.enable_reality();
+    let originals = fixture.originals();
+    let text = success(
+        fixture
+            .command("plan")
+            .args(["--type", "vless"])
+            .output()
+            .unwrap(),
+    );
+    assert!(text.contains("/uuid"));
+    assert!(text.contains("/private_key"));
+    assert!(text.contains("/short_id"));
+    assert!(!text.contains("old-private"));
+    assert!(!text.contains("0123456789abcdef"));
+    assert_eq!(fixture.originals(), originals);
+    assert!(!fixture.log().contains("check"));
+    let text = success(
+        fixture
+            .command("rotate")
+            .args(["--type", "vless"])
+            .output()
+            .unwrap(),
+    );
+    assert!(text.contains("Updated 2 config file(s)"));
+    assert_eq!(
+        fixture
+            .log()
+            .lines()
+            .filter(|line| line.starts_with("check "))
+            .count(),
+        2
+    );
+    let server: Value = serde_json::from_slice(&fixture.originals()[0]).unwrap();
+    let client: Value = serde_json::from_slice(&fixture.originals()[1]).unwrap();
+    assert_eq!(
+        server["inbounds"][0]["users"][0]["uuid"],
+        client["outbounds"][0]["uuid"]
+    );
+    assert_eq!(
+        client["outbounds"][0]["tls"]["reality"]["short_id"],
+        "0123456789abcdef"
+    );
+}
+
+#[test]
+fn type_rotation_cli_rejects_invalid_combinations_and_unsafe_selection() {
+    for args in [
+        vec![],
+        vec!["--only", "uuid"],
+        vec!["--type", "vless", "--kind", "vless-uuid"],
+        vec!["--kind", "vless-uuid", "--only", "uuid"],
+        vec!["--type", "vless", "--only", "password"],
+        vec!["--type", "hysteria2", "--only", "reality-keypair"],
+        vec!["--type", "vless", "--outbound-tag", "home"],
+        vec!["--type", "vless", "--client", "clients/phone.json"],
+        vec![
+            "--type",
+            "vless",
+            "--only",
+            "reality-keypair",
+            "--outbound-tag",
+            "home",
+        ],
+    ] {
+        let fixture = Fixture::new("1.14.0");
+        let originals = fixture.originals();
+        let output = fixture.command("rotate").args(&args).output().unwrap();
+        assert!(!output.status.success(), "unexpected success: {args:?}");
+        assert_eq!(fixture.originals(), originals);
+        let log = fs::read_to_string(fixture.root.path().join("invocations")).unwrap_or_default();
+        assert!(!log.contains("generate"));
+        assert!(!log.contains("check"));
+    }
+}
+
+#[test]
+fn type_only_and_outbound_tag_work_and_inspect_keeps_legacy_aliases() {
+    let fixture = Fixture::new("1.14.0");
+    fixture.enable_reality();
+    fixture.write(
+        "clients/phone.json",
+        &json!({"outbounds": [
+            {"type": "vless", "tag": "home", "uuid": "11111111-1111-4111-8111-111111111111"},
+            {"type": "vless", "tag": "office", "uuid": "11111111-1111-4111-8111-111111111111"}
+        ]}),
+    );
+    let text = success(
+        fixture
+            .command("plan")
+            .args([
+                "--type",
+                "vless",
+                "--only",
+                "uuid",
+                "--outbound-tag",
+                "home",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert!(text.contains("/outbounds/0/uuid"));
+    assert!(text.contains("/outbounds/1/uuid"));
+    assert!(!text.contains("/private_key"));
+    for flag in ["--type", "--protocol"] {
+        let text = success(
+            fixture
+                .command("inspect")
+                .args([flag, "vless", "--outbound-tag", "home"])
+                .output()
+                .unwrap(),
+        );
+        assert!(text.contains("tag=home"));
+        assert!(!text.contains("tag=office"));
+    }
+    let text = success(
+        fixture
+            .command("inspect")
+            .args(["--type", "hysteria2"])
+            .output()
+            .unwrap(),
+    );
+    assert!(text.contains("No supported bindings"));
+    let output = Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+        .current_dir(fixture.root.path())
+        .env("TEST_LOG", fixture.root.path().join("invocations"))
+        .args([
+            "plan",
+            "--server",
+            "server.json",
+            "--client-config-dir",
+            "clients",
+            "--type",
+            "vless",
+            "--only",
+            "uuid",
+            "--sing-box",
+            "./sing-box-test",
+        ])
+        .output()
+        .unwrap();
+    success(output);
+}
+
+#[test]
+fn type_rotation_validation_failure_keeps_all_original_material() {
+    let fixture = Fixture::new("1.14.0");
+    fixture.enable_reality();
+    let originals = fixture.originals();
+    let output = fixture
+        .command("rotate")
+        .args(["--type", "vless"])
+        .env("TEST_FAIL_CHECK", "yes")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(fixture.originals(), originals);
+}
+
+#[test]
 fn plan_runs_version_then_generator_and_never_writes_or_checks() {
     let fixture = Fixture::new("1.14.0");
     let originals = fixture.originals();

@@ -4,7 +4,7 @@ use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
 use crate::{
-    binding::{EndpointRef, Inventory, client_selected},
+    binding::{EndpointRef, Inventory, ServiceBinding, client_selected},
     cli::{Input, Protocol, RotationKind},
     config::ConfigSet,
     plan::{OperationKind, RotationPlan},
@@ -42,6 +42,14 @@ pub fn keypair(
                     .any(|client| reality_enabled(configs, client))
         },
     )?;
+    keypair_for_service(configs, service, singbox)
+}
+
+pub(crate) fn keypair_for_service(
+    configs: &ConfigSet,
+    service: &ServiceBinding,
+    singbox: &impl SingBox,
+) -> Result<RotationPlan> {
     let old_private = string_field(configs, &service.inbound, "tls/reality/private_key")?;
     let clients: Vec<_> = service
         .clients()
@@ -126,6 +134,15 @@ pub fn short_ids(
                 })
         },
     )?;
+    short_ids_for_service(configs, service, input, singbox)
+}
+
+pub(crate) fn short_ids_for_service(
+    configs: &ConfigSet,
+    service: &ServiceBinding,
+    input: &Input,
+    singbox: &impl SingBox,
+) -> Result<RotationPlan> {
     let target = service.inbound.field("tls/reality/short_id");
     let accepted = configs
         .value(&target.file, &target.pointer)?

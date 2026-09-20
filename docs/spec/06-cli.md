@@ -21,16 +21,16 @@ recover   restore an interrupted transaction or clean completed transaction meta
 
 ```text
 --server <PATH>          server JSON file or server config directory
---clients <DIR>          directory containing independent client JSON files
+--clients <DIR>          local directory of independent client JSON configs
 --client <PATH>          include/select a specific client file; repeatable
 --inbound-tag <TAG>      select server inbound tag; repeatable
---client-tag <TAG>       select client outbound tag; repeatable
+--outbound-tag <TAG>     select client outbound tag; repeatable (--client-tag alias)
 --sing-box <PATH>        explicit sing-box executable
 ```
 
 At least one client source is required for commands that synchronize server/client state.
 
-`--clients` discovers direct `.json` files in the directory. Recursive discovery is not required in v1.
+`--clients` (alias `--client-config-dir`) discovers direct `.json` files in the directory. Recursive discovery is not required in v1. Each file may contain multiple outbounds of the same or different types. Files are local: the tool does not contact devices, deploy configs, or reload services.
 
 ## Selector semantics
 
@@ -50,6 +50,47 @@ Across categories, selectors are ANDed:
 
 means the `home` outbound(s) inside `phone.json`.
 
+## Type-driven rotation
+
+Preferred syntax for both `plan` and `rotate`:
+
+```bash
+sb-rotate plan --server ./server.json --clients ./clients/ --type vless
+sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
+sb-rotate rotate --server ./server.json --clients ./clients/ --type hysteria2
+
+# Limit material and optionally select through an outbound.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type vless --only uuid --outbound-tag home
+
+# Limit to one inbound, including its shared secrets.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type vless --inbound-tag vless-home
+```
+
+`--type` uses sing-box type names, currently `vless` and `hysteria2`. Reality is a TLS option on VLESS, not a separate type.
+
+Without `--only`, all supported, already-configured material with bound outbounds is rotated:
+
+| Type | Default material | Allowed `--only` values |
+|---|---|---|
+| `vless` | UUIDs, enabled Reality keypairs and short IDs | `uuid`, `reality-keypair`, `reality-short-id` |
+| `hysteria2` | User passwords, configured obfs passwords | `password`, `obfs-password` |
+
+Rules:
+
+- Each outbound is matched independently to its inbound/user by the existing discovery rules, not merely by type or tag. Ambiguous matches fail.
+- Every matching inbound is eligible, even for keypair/obfs/short-ID rotation. `--inbound-tag` optionally narrows this set.
+- All edits are composed from the original inventory, then validated/applied once using one recoverable transaction. Replacements remain atomic per file, not across files.
+- Shared user credentials receive one replacement across all discovered occurrences. Shared keypairs/obfs passwords are generated once per inbound. Short IDs are generated per selected Reality outbound.
+- An all-material rotation rejects `--client` and `--outbound-tag`, even if optional secrets are absent. Whole-inbound `--only reality-keypair` / `--only obfs-password` also reject these selectors. Use `--clients` for the full inventory.
+- `--only uuid`, `--only password`, and `--only reality-short-id` allow client/outbound selection. Selecting a user still updates every discovered occurrence of that user's credential.
+- Absent/disabled optional features are not enabled. TLS certificates, addresses, and ports are not rotated. Unmatched users/outbounds and unattributed accepted short IDs are retained. Clients not supplied cannot be updated.
+- Explicitly selected material with no eligible bindings fails rather than silently succeeding. A material unsupported by the selected type fails before generation.
+- `--only` requires `--type`. Neither can be combined with legacy `--kind`.
+
+The `--kind` examples below remain supported for compatibility; unlike type-driven rotation, their service-scoped operations still require a single matching inbound.
+
 ## `inspect`
 
 ```bash
@@ -60,10 +101,10 @@ Useful filters:
 
 ```bash
 sb-rotate inspect --server ./server.json --clients ./clients/ \
-  --protocol vless
+  --type vless
 
 sb-rotate inspect --server ./server.json --clients ./clients/ \
-  --protocol hysteria2
+  --type hysteria2
 
 sb-rotate inspect --server ./server.json --clients ./clients/ \
   --inbound-tag vless-home
@@ -82,11 +123,11 @@ vless inbound=vless-home
     clients: 2
 ```
 
-Passwords are masked in output.
+Passwords are masked in output. `--protocol` remains an alias for `--type`; `--client-tag` remains an alias for `--outbound-tag` on commands that accept outbound selectors.
 
 ## `plan`
 
-Syntax:
+Use the type-driven syntax above, or the legacy single-operation syntax:
 
 ```bash
 sb-rotate plan --server <PATH> <client options> --kind <KIND> [selectors]
@@ -111,7 +152,7 @@ sb-rotate plan --server ./server.json --clients ./clients/ \
 
 ## `rotate`
 
-Syntax:
+Use the type-driven syntax above, or the legacy single-operation syntax:
 
 ```bash
 sb-rotate rotate --server <PATH> <client options> --kind <KIND> [selectors]

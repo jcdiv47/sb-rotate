@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     binding::{ConfigRef, Inventory, client_selected},
-    cli::{IdentityKind, Input, PropertyKind, RotationKind},
+    cli::{IdentityKind, Input, PropertyKind, Protocol, RotationKind, RotationMaterial},
     config::ConfigSet,
     protocol,
     singbox::SingBox,
@@ -25,6 +25,7 @@ pub struct Edit {
 #[derive(Clone, Copy, Debug)]
 pub enum OperationKind {
     Rotate(RotationKind),
+    RotateType(Protocol),
     Set(PropertyKind),
 }
 
@@ -56,6 +57,116 @@ pub fn rotation(
         }
         _ => unreachable!("identity rotations handled above"),
     }
+}
+
+/// Compose type-wide rotations against one original inventory. No intermediate
+/// config is written or rediscovered; the caller validates/applies the union once.
+pub fn rotation_by_type(
+    configs: &ConfigSet,
+    inventory: &Inventory,
+    input: &Input,
+    protocol: Protocol,
+    only: Option<RotationMaterial>,
+    singbox: &impl SingBox,
+) -> Result<RotationPlan> {
+    let kind = only
+        .map(|material| {
+            material.kind(protocol).with_context(|| {
+                format!(
+                    "--only {material:?} is not supported for --type {}",
+                    protocol.name()
+                )
+            })
+        })
+        .transpose()?;
+    let client_selectable = kind
+        .is_some_and(|kind| kind.identity().is_some() || kind == RotationKind::VlessRealityShortId);
+    ensure!(
+        client_selectable || (input.client.is_empty() && input.client_tag.is_empty()),
+        "all-material and service-wide rotations reject --client and --outbound-tag; supply all client configs with --clients and narrow with --inbound-tag, or use --only uuid/password/reality-short-id"
+    );
+    inventory.ensure_unambiguous(protocol)?;
+    if let Some(identity) = kind.and_then(RotationKind::identity) {
+        return identities(configs, inventory, input, identity, singbox);
+    }
+    let mut combined = RotationPlan::new(OperationKind::RotateType(protocol));
+    if only.is_none() {
+        let identity = match protocol {
+            Protocol::Vless => IdentityKind::VlessUuid,
+            Protocol::Hysteria2 => IdentityKind::Hysteria2Password,
+        };
+        combined.append(identities(configs, inventory, input, identity, singbox)?);
+    }
+    let wants = |candidate| kind.is_none_or(|kind| kind == candidate);
+    // A shared secret is generated once per inbound, not once per outbound.
+    let mut generated_shared = BTreeSet::new();
+    for service in &inventory.services {
+        if service.protocol != protocol
+            || !service
+                .clients()
+                .any(|client| client_selected(client, configs, input))
+        {
+            continue;
+        }
+        let mut parts = Vec::new();
+        match protocol {
+            Protocol::Vless => {
+                if !protocol::vless::reality_enabled(configs, &service.inbound)
+                    || !service.clients().any(|client| {
+                        protocol::vless::reality_enabled(configs, client)
+                            && client_selected(client, configs, input)
+                    })
+                {
+                    continue;
+                }
+                if wants(RotationKind::VlessRealityKeypair) {
+                    parts.push(protocol::vless::keypair_for_service(
+                        configs, service, singbox,
+                    )?);
+                }
+                if wants(RotationKind::VlessRealityShortId) {
+                    parts.push(protocol::vless::short_ids_for_service(
+                        configs, service, input, singbox,
+                    )?);
+                }
+            }
+            Protocol::Hysteria2 => {
+                let inbound = protocol::endpoint_value(configs, &service.inbound)?;
+                if wants(RotationKind::Hysteria2ObfsPassword)
+                    && inbound.get("obfs").is_some_and(|value| !value.is_null())
+                {
+                    parts.push(protocol::hysteria2::obfs_password_for_service(
+                        configs, service, singbox,
+                    )?);
+                }
+            }
+        }
+        for part in parts {
+            for edit in &part.edits {
+                // Client copies intentionally share the inbound's secret.
+                if configs.server_files.contains(&edit.target.file)
+                    && (edit.target.pointer.ends_with("/private_key")
+                        || edit.target.pointer.ends_with("/obfs/password"))
+                {
+                    let value = edit
+                        .new
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .context("generated shared secret must be a string")?;
+                    ensure!(
+                        generated_shared.insert(value.to_owned()),
+                        "generated shared secret collides with another inbound's replacement; retry"
+                    );
+                }
+            }
+            combined.append(part);
+        }
+    }
+    ensure!(
+        !combined.edits.is_empty(),
+        "no matching configured material with bound outbounds; use inspect to review bindings"
+    );
+    Ok(combined)
 }
 
 pub fn identities(
@@ -171,6 +282,11 @@ fn pointer_key(token: &str) -> Result<String> {
 }
 
 impl RotationPlan {
+    fn append(&mut self, other: Self) {
+        self.contexts.extend(other.contexts);
+        self.edits.extend(other.edits);
+    }
+
     pub fn new(operation: OperationKind) -> Self {
         Self {
             operation,

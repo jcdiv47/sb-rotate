@@ -100,7 +100,7 @@ Protocol adapters decide whether an operation is valid for a binding.
 
 ## Rotation plan
 
-All protocol-specific logic ends at `RotationPlan`.
+All protocol-specific logic ends at `RotationPlan`. Type-driven rotation composes multiple operation plans into a single `RotateType(Protocol)` plan; edit paths remain disjoint and are checked together before writes.
 
 ```rust
 struct RotationPlan {
@@ -137,7 +137,8 @@ Rules:
 - multiple values in the same selector category are ORed;
 - different selector categories are ANDed;
 - no client selector means all clients in the selected service binding;
-- a service-scoped operation ignores client narrowing unless its operation definition explicitly allows client selection.
+- all-material and service-scoped secret operations reject client narrowing; identity and short-ID operations allow it;
+- `--type` selects the sing-box type; `--outbound-tag` is the preferred name for the client tag selector (`--client-tag` remains an alias).
 
 Example:
 
