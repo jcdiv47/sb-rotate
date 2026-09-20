@@ -1,0 +1,19 @@
+{
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "home",
+      "server": "hy2.example.com",
+      "server_port": 8443,
+      "password": "phone-password-example",
+      "obfs": {
+        "type": "salamander",
+        "password": "shared-obfs-example"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "hy2.example.com"
+      }
+    }
+  ]
+}

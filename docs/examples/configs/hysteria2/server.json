@@ -1,0 +1,29 @@
+{
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-home",
+      "listen": "::",
+      "listen_port": 8443,
+      "users": [
+        {
+          "name": "phone",
+          "password": "phone-password-example"
+        },
+        {
+          "name": "laptop",
+          "password": "laptop-password-example"
+        }
+      ],
+      "obfs": {
+        "type": "salamander",
+        "password": "shared-obfs-example"
+      },
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/etc/sing-box/cert.pem",
+        "key_path": "/etc/sing-box/key.pem"
+      }
+    }
+  ]
+}

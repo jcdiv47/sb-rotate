@@ -1,0 +1,21 @@
+{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "home",
+      "server": "proxy.example.com",
+      "server_port": 443,
+      "uuid": "22222222-2222-4222-8222-222222222222",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.example.com",
+        "reality": {
+          "enabled": true,
+          "public_key": "SERVER_REALITY_PUBLIC_KEY",
+          "short_id": "bbbbbbbbbbbbbbbb"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Rust build output (keep Cargo.lock tracked for this CLI)
+target/
+**/*.rs.bk
+
+# Local environment and private runtime configs
+.env
+.env.*
+!.env.example
+!.env.sample
+/local/
+/server.json
+/clients/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
