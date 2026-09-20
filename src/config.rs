@@ -8,12 +8,16 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
-use crate::cli::Input;
+use crate::{
+    cli::Input,
+    fsutil::{FileState, read_snapshot},
+};
 
 pub struct Document {
     pub value: Value,
     pub original: Vec<u8>,
     pub permissions: fs::Permissions,
+    pub(crate) state: FileState,
 }
 
 pub struct ConfigSet {
@@ -24,11 +28,22 @@ pub struct ConfigSet {
     pub server_layout: BTreeMap<OsString, PathBuf>,
     pub client_files: BTreeSet<PathBuf>,
     pub selected_clients: BTreeSet<PathBuf>,
+    client_layout: Option<(PathBuf, BTreeMap<OsString, PathBuf>)>,
+    source_paths: BTreeMap<PathBuf, PathBuf>,
 }
 
 impl ConfigSet {
     pub fn load(input: &Input) -> Result<Self> {
-        let server = canonical(&input.server)?;
+        // Keep aliases as well as resolved paths so a later symlink retarget or
+        // directory-entry change cannot silently change the supplied config set.
+        let mut source_paths = BTreeMap::new();
+        let mut resolve = |path: &Path| -> Result<PathBuf> {
+            let source = std::path::absolute(path)?;
+            let resolved = canonical(&source)?;
+            source_paths.insert(source, resolved.clone());
+            Ok(resolved)
+        };
+        let server = resolve(&input.server)?;
         let server_is_directory = server.is_dir();
         let server_layout = if server_is_directory {
             json_layout(&server)?
@@ -53,12 +68,21 @@ impl ConfigSet {
         let selected_clients: BTreeSet<_> = input
             .client
             .iter()
-            .map(|p| canonical(p))
+            .map(|p| resolve(p))
             .collect::<Result<_>>()?;
-        let mut client_files = match &input.clients {
-            Some(directory) => json_layout(directory)?.into_values().collect(),
-            None => BTreeSet::new(),
-        };
+        let client_layout = input
+            .clients
+            .as_ref()
+            .map(|path| -> Result<_> {
+                let directory = resolve(path)?;
+                let layout = json_layout(&directory)?;
+                Ok((directory, layout))
+            })
+            .transpose()?;
+        let mut client_files = client_layout
+            .as_ref()
+            .map(|(_, layout)| layout.values().cloned().collect())
+            .unwrap_or_else(BTreeSet::new);
         client_files.extend(selected_clients.iter().cloned());
         ensure!(!client_files.is_empty(), "no client JSON files supplied");
         ensure!(
@@ -72,7 +96,7 @@ impl ConfigSet {
                 "not a regular config file: {}",
                 path.display()
             );
-            let original = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            let (original, state) = read_snapshot(path)?;
             let value: Value = serde_json::from_slice(&original)
                 .with_context(|| format!("parsing JSON in {}", path.display()))?;
             ensure!(
@@ -80,13 +104,14 @@ impl ConfigSet {
                 "config must be an object: {}",
                 path.display()
             );
-            let permissions = fs::metadata(path)?.permissions();
+            let permissions = state.permissions.clone();
             documents.insert(
                 path.clone(),
                 Document {
                     value,
                     original,
                     permissions,
+                    state,
                 },
             );
         }
@@ -98,7 +123,70 @@ impl ConfigSet {
             server_layout,
             client_files,
             selected_clients,
+            client_layout,
+            source_paths,
         })
+    }
+
+    pub(crate) fn lock_directories(&self) -> Result<BTreeSet<PathBuf>> {
+        let mut directories: BTreeSet<_> = self
+            .documents
+            .keys()
+            .filter_map(|path| path.parent().map(Path::to_owned))
+            .collect();
+        if self.server_is_directory {
+            directories.insert(self.server.clone());
+        }
+        if let Some((directory, _)) = &self.client_layout {
+            directories.insert(directory.clone());
+        }
+        // Also protect explicit file aliases, not just their resolved targets.
+        // Directory inputs lock the directory itself, not its (possibly unwritable) parent.
+        for (source, resolved) in &self.source_paths {
+            if self.documents.contains_key(resolved)
+                && let Some(parent) = source.parent()
+            {
+                directories.insert(canonical(parent)?);
+            }
+        }
+        Ok(directories)
+    }
+
+    pub(crate) fn verify_unchanged(&self) -> Result<()> {
+        for (source, expected) in &self.source_paths {
+            ensure!(
+                canonical(source)? == *expected,
+                "config source path changed while planning: {}; refusing to commit",
+                source.display()
+            );
+        }
+        if self.server_is_directory {
+            ensure!(
+                json_layout(&self.server)? == self.server_layout,
+                "server directory changed while planning; refusing to commit"
+            );
+        }
+        if let Some((directory, layout)) = &self.client_layout {
+            ensure!(
+                json_layout(directory)? == *layout,
+                "client directory changed while planning; refusing to commit"
+            );
+        }
+        for path in self.documents.keys() {
+            self.verify_file(path)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_file(&self, path: &Path) -> Result<()> {
+        let doc = self.documents.get(path).context("config file not loaded")?;
+        let (bytes, state) = read_snapshot(path)?;
+        ensure!(
+            bytes == doc.original && state == doc.state,
+            "config changed while planning (contents or metadata): {}; refusing to overwrite",
+            path.display()
+        );
+        Ok(())
     }
 
     pub fn value(&self, file: &Path, pointer: &str) -> Result<&Value> {

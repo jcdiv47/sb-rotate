@@ -87,7 +87,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         fs::create_dir(root.path().join("clients")).unwrap();
         let input = Input {
             server: root.path().join("server.json"),
@@ -353,8 +353,8 @@ fn validation_failure_leaves_every_original_byte_untouched() {
     for (path, doc) in &configs.documents {
         assert_eq!(fs::read(path).unwrap(), doc.original);
     }
-    assert_eq!(fs::read_dir(fixture.path("clients")).unwrap().count(), 2);
-    assert_eq!(fs::read_dir(fixture.root.path()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(fixture.path("clients")).unwrap().count(), 3); // includes persistent writer lock
+    assert_eq!(fs::read_dir(fixture.root.path()).unwrap().count(), 3); // includes persistent writer lock
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn directory_server_is_validated_as_a_complete_set() {
         fs::read(fixture.path("server.d/00-log.json")).unwrap(),
         unchanged
     );
-    assert_eq!(fs::read_dir(fixture.path("server.d")).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(fixture.path("server.d")).unwrap().count(), 3); // two configs + writer lock
 }
 
 #[test]

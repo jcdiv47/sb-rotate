@@ -10,6 +10,8 @@ target/
 /local/
 /server.json
 /clients/
+.sb-rotate.lock
+.sb-rotate-*.tmp
 
 # Editor and OS files
 .idea/

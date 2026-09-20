@@ -13,13 +13,25 @@ The implementation can stay small while still following one transaction-like seq
 2. discover bindings
 3. build RotationPlan
 4. apply edits to in-memory documents
-5. write changed documents to temporary paths
-6. run sing-box validation against temporary configs
-7. replace original changed files
-8. exit success
+5. acquire directory writer locks; reject stale source snapshots
+6. write changed documents to temporary paths
+7. run sing-box validation against temporary configs
+8. recheck writer locks, source paths, directory membership, contents, and metadata
+9. replace original changed files (rechecking each destination immediately before replacement)
+10. release locks and exit success
 ```
 
 If generation, editing, serialization, or validation fails, original files are not replaced.
+
+## Concurrent writers and filesystem changes
+
+Nonempty mutations acquire exclusive, non-blocking OS locks on `.sb-rotate.lock` sidecars in the config directories and resolved file-parent directories. Locks cover the complete loaded inventory, including unchanged files used for discovery. Canonical directory ordering prevents lock-order deadlocks, and failure to acquire any lock releases the already-acquired locks. Another writer receives a retry diagnostic before staging or validation. Mutations need access to create/open all sidecars, even in directories whose config files will remain unchanged.
+
+Sidecars are deliberately persistent. Deleting one during a command would allow a second writer to lock a different file at the same path. Process exit releases the kernel lock; leftover sidecars are not stale-lock errors. Read-only previews and no-op mutations do not create sidecars.
+
+The loaded snapshot records original source aliases and both server/client directory layouts. Rechecking catches retargeted input symlinks, newly added or removed client files, and changes to contents or metadata (including inode, link count, ownership, and mode on Unix). This prevents a stale plan from silently dropping a newly supplied client. Mutations refuse hard-linked destination configs on Unix, because replacing a single pathname would sever its other aliases. Read-only Windows destinations are rejected before staging, since they cannot be atomically replaced and read-only temporary files would complicate cleanup.
+
+These locks coordinate `sb-rotate` writers only. Readers do not get snapshot isolation, and external editors/deployers can still race with checks. Parent directories must be trusted. Cross-file power-loss/process-termination atomicity and persistent recovery journaling are not implemented.
 
 ## Server validation
 
@@ -61,7 +73,9 @@ For every changed file:
 2. flush/close it;
 3. rename it over the destination after every validation succeeds.
 
-The implementation does not need a backup/archive system in v1.
+Temporary rollback copies are prepared before replacement. An ordinary replacement failure restores already-replaced files, provided they still match the installed replacements. If an external writer has modified one, rollback refuses to overwrite that newer edit. A rollback failure reports retained recovery-copy paths. There is no persistent backup/archive system in v1.
+
+Replacement files preserve source permissions and, on Unix, owner/group; failure to preserve these attributes aborts before replacement. Extended attributes and ACLs are not copied.
 
 ## Multi-file server configs
 

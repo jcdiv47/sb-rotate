@@ -294,6 +294,7 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
+ "rustix",
  "semver",
  "serde_json",
  "tempfile",

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Rust / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+
+  msrv:
+    name: Minimum Rust 1.89
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: cargo check --locked --all-targets
+
+  sing-box:
+    name: Real sing-box 1.14.0 / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install checksum-pinned sing-box release
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/sing-box.tar.gz"
+          curl --fail --location --retry 3 \
+            https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-linux-amd64.tar.gz \
+            --output "$archive"
+          echo "2375de6999f4f56ab46b4fc5ddf26a6aba1d3e61a0f4e7ddec2f4690457d5f63  $archive" | sha256sum --check --strict
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import tarfile
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          with tarfile.open(root / 'sing-box.tar.gz', 'r:gz') as archive:
+              binaries = [entry for entry in archive.getmembers()
+                          if entry.isfile() and Path(entry.name).name == 'sing-box']
+              if len(binaries) != 1:
+                  raise SystemExit('Expected exactly one sing-box binary')
+              with archive.extractfile(binaries[0]) as source, (root / 'sing-box').open('wb') as output:
+                  shutil.copyfileobj(source, output)
+          (root / 'sing-box').chmod(0o755)
+          PY
+          echo "SING_BOX=$RUNNER_TEMP/sing-box" >> "$GITHUB_ENV"
+      - run: cargo test --locked --test real_singbox -- --ignored

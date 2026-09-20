@@ -33,7 +33,7 @@ fn successful(output: Output) -> Result<()> {
 fn real_generators_validation_and_service_operations() -> Result<()> {
     let singbox = Executable::resolve(None);
     require_supported(&singbox)?;
-    let root = tempfile::tempdir()?;
+    let root = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir())?)?;
     let server_dir = root.path().join("server.d");
     let clients_dir = root.path().join("clients");
     fs::create_dir(&server_dir)?;

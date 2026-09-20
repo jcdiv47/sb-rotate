@@ -33,7 +33,7 @@ cargo clippy --all-targets -- -D warnings
 ./target/release/sb-rotate --help
 ```
 
-A recent Rust toolchain supporting edition 2024 is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Default tests use controlled generators/validators and do not require sing-box to be installed.
+Rust 1.89+ (edition 2024 and standard-library file locking) is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Default tests use controlled generators/validators and do not require sing-box to be installed.
 
 An opt-in integration test exercises all rotations and service properties against the real generators/validator, using temporary configs and certificates (requires sing-box and `openssl`, no running services):
 
@@ -42,11 +42,15 @@ cargo test --test real_singbox -- --ignored
 # Optionally prefix with SING_BOX=/path/to/sing-box
 ```
 
+GitHub Actions runs formatting, Clippy, tests, and release builds on Linux, macOS, and Windows. A separate Linux job runs the real-binary integration test using a checksum-pinned sing-box 1.14.0 release.
+
 ### Safety and current limitations
 
 - Supply every client that must stay synchronized. The tool cannot update clients it has not been given. With `--clients`, `--client` narrows selection but does not remove other discovered occurrences of a shared identity.
 - `plan` generates fresh values in memory without writing config files. `rotate` generates a new plan, validates the staged server set and changed clients, then replaces originals. Unchanged files are not rewritten.
-- Keep backups and avoid concurrent config writers. Changes detected before commit are rejected, and ordinary replacement failures trigger rollback. Replacements are atomic **per file**, not across files under power loss/process termination; crash recovery and cross-process locking are not implemented. If rollback itself fails, the error reports retained recovery copies.
+- Mutations use fail-fast, cross-process writer locks on the supplied config directories and resolved file-parent directories. Contending `sb-rotate` writers fail with a retry message before staging/validation. Mutations need permission to create/open these sidecars, including in directories containing unchanged source configs. Empty `.sb-rotate.lock` files intentionally persist; **do not delete them while a command is running**. Kernel locks are released when the process exits, including after a crash. Previews and no-op updates do not create locks.
+- Keep backups and avoid other concurrent config writers. The locks are advisory: external editors/deployers and read-only commands do not participate. Input-path retargeting, server/client directory membership changes, and content/metadata changes detected before commit are rejected. This does not provide snapshot isolation for readers or eliminate races with uncooperative writers. Config directories must be trusted; this is not a sandbox for hostile filesystem changes.
+- Replacements preserve permissions and, on Unix, owner/group. Mutating a hard-linked config is rejected on Unix instead of silently breaking its aliases; read-only Windows destinations are rejected before staging. Extended attributes/ACLs are not copied. Ordinary replacement failures trigger rollback, with retained recovery copies reported if rollback fails or would overwrite a newer external edit. Replacements are atomic **per file**, not across files under power loss/process termination; persistent crash recovery is not implemented.
 - Files are strict JSON; changed files are reserialized. Validation uses the command's working directory for relative resource paths. sing-box validation diagnostics are forwarded verbatim and may contain config values.
 
 ## Core model

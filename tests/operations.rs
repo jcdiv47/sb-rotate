@@ -79,7 +79,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new(hysteria: bool) -> Self {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         fs::create_dir(root.path().join("clients")).unwrap();
         let input = Input {
             server: root.path().join("server.json"),

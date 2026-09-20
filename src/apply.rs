@@ -9,10 +9,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use tempfile::{Builder, NamedTempFile};
+use tempfile::{Builder, TempPath};
 
 use crate::{
-    config::{ConfigSet, json_layout},
+    config::ConfigSet,
+    fsutil::{FileState, read_snapshot},
+    locking::DirectoryLocks,
     plan::RotationPlan,
     singbox::SingBox,
 };
@@ -34,13 +36,18 @@ pub fn apply(configs: &ConfigSet, plan: &RotationPlan, singbox: &impl SingBox) -
     if changed.is_empty() {
         return Ok(0);
     }
+    let locks = DirectoryLocks::acquire(configs.lock_directories()?)?;
+    configs.verify_unchanged()?;
+    for path in changed.keys() {
+        configs.documents[path].state.ensure_replaceable(path)?;
+    }
     let mut staged = BTreeMap::new();
     for (path, value) in &changed {
         let mut bytes = serde_json::to_vec_pretty(value)?;
         bytes.push(b'\n');
         staged.insert(
             path.clone(),
-            stage(path, &bytes, &configs.documents[path].permissions)?,
+            stage(path, &bytes, &configs.documents[path].state)?,
         );
     }
 
@@ -49,7 +56,7 @@ pub fn apply(configs: &ConfigSet, plan: &RotationPlan, singbox: &impl SingBox) -
     let server_temp = private_server_directory()?;
     for (name, path) in &configs.server_layout {
         let bytes = match staged.get(path) {
-            Some(temp) => fs::read(temp.path())?,
+            Some(temp) => fs::read(temp)?,
             None => configs.documents[path].original.clone(),
         };
         let target = server_temp.path().join(name);
@@ -66,7 +73,7 @@ pub fn apply(configs: &ConfigSet, plan: &RotationPlan, singbox: &impl SingBox) -
     }
     for path in &configs.client_files {
         if let Some(temp) = staged.get(path) {
-            singbox.check_file(temp.path())?;
+            singbox.check_file(temp)?;
         }
     }
 
@@ -75,10 +82,14 @@ pub fn apply(configs: &ConfigSet, plan: &RotationPlan, singbox: &impl SingBox) -
     let mut backups = BTreeMap::new();
     for path in staged.keys() {
         let doc = &configs.documents[path];
-        backups.insert(path.clone(), stage(path, &doc.original, &doc.permissions)?);
+        backups.insert(path.clone(), stage(path, &doc.original, &doc.state)?);
     }
-    verify_unchanged(configs)?;
+    locks.verify()?;
+    configs.verify_unchanged()?;
     commit(staged, backups, |source, destination| {
+        configs
+            .verify_file(destination)
+            .map_err(std::io::Error::other)?;
         fs::rename(source, destination)
     })?;
     Ok(changed.len())
@@ -97,7 +108,7 @@ fn private_server_directory() -> Result<tempfile::TempDir> {
     Ok(builder.tempdir()?)
 }
 
-fn stage(path: &Path, bytes: &[u8], permissions: &fs::Permissions) -> Result<NamedTempFile> {
+fn stage(path: &Path, bytes: &[u8], state: &FileState) -> Result<TempPath> {
     let parent = path
         .parent()
         .context("config file has no parent directory")?;
@@ -107,45 +118,44 @@ fn stage(path: &Path, bytes: &[u8], permissions: &fs::Permissions) -> Result<Nam
         .tempfile_in(parent)
         .with_context(|| format!("staging {}", path.display()))?;
     temp.write_all(bytes)?;
-    temp.as_file().set_permissions(permissions.clone())?;
+    state.restore_attributes(temp.as_file())?;
     temp.as_file().sync_all()?;
-    Ok(temp)
-}
-
-fn verify_unchanged(configs: &ConfigSet) -> Result<()> {
-    if configs.server_is_directory {
-        ensure!(
-            json_layout(&configs.server)? == configs.server_layout,
-            "server directory changed while planning; refusing to commit"
-        );
-    }
-    for (path, doc) in &configs.documents {
-        ensure!(
-            fs::read(path).with_context(|| format!("rechecking {}", path.display()))?
-                == doc.original,
-            "config changed while planning: {}; refusing to overwrite",
-            path.display()
-        );
-    }
-    Ok(())
+    // Close writer handles before validation/replacement (also finalizes Windows
+    // write timestamps), while retaining automatic cleanup of the temporary path.
+    Ok(temp.into_temp_path())
 }
 
 fn commit(
-    staged: BTreeMap<PathBuf, NamedTempFile>,
-    mut backups: BTreeMap<PathBuf, NamedTempFile>,
+    staged: BTreeMap<PathBuf, TempPath>,
+    mut backups: BTreeMap<PathBuf, TempPath>,
     mut replace: impl FnMut(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
+    // Capture every expected installed file before the first rename. Rollback
+    // must not overwrite a newer external edit to an already-replaced path.
+    let expected: BTreeMap<_, _> = staged
+        .iter()
+        .map(|(path, temp)| Ok((path.clone(), read_snapshot(temp)?)))
+        .collect::<Result<_>>()?;
     let mut committed: Vec<PathBuf> = Vec::new();
     for (path, temp) in staged {
-        if let Err(error) = replace(temp.path(), &path) {
+        if let Err(error) = replace(&temp, &path) {
             let mut rollback_errors = Vec::new();
             for previous in committed.iter().rev() {
                 let backup = backups
                     .remove(previous)
                     .expect("backup for every committed file");
-                if let Err(rollback) = fs::rename(backup.path(), previous) {
-                    // Keep the recovery copy if the filesystem also refuses rollback.
-                    let recovery = backup.into_temp_path().keep();
+                let restore = || -> Result<()> {
+                    let current = read_snapshot(previous)?;
+                    ensure!(
+                        current == expected[previous],
+                        "file changed after replacement; refusing to overwrite an external edit during rollback"
+                    );
+                    fs::rename(&backup, previous).context("restoring rollback copy")?;
+                    Ok(())
+                };
+                if let Err(rollback) = restore() {
+                    // Keep the recovery copy if rollback is unsafe or refused.
+                    let recovery = backup.keep();
                     rollback_errors.push(format!(
                         "{}: {rollback}; recovery copy: {recovery:?}",
                         previous.display()
@@ -183,6 +193,50 @@ mod tests {
     }
 
     #[test]
+    fn rollback_preserves_newer_external_edits_and_keeps_recovery_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut staged = BTreeMap::new();
+        let mut backups = BTreeMap::new();
+        for name in ["a.json", "b.json"] {
+            let path = directory.path().join(name);
+            fs::write(&path, b"original").unwrap();
+            let state = FileState::from_metadata(&fs::metadata(&path).unwrap()).unwrap();
+            staged.insert(path.clone(), stage(&path, b"changed", &state).unwrap());
+            backups.insert(path.clone(), stage(&path, b"original", &state).unwrap());
+        }
+        let first = directory.path().join("a.json");
+        let mut calls = 0;
+        let error = commit(staged, backups, |source, destination| {
+            calls += 1;
+            if calls == 2 {
+                fs::write(&first, b"external edit")?;
+                return Err(std::io::Error::other("injected replacement failure"));
+            }
+            fs::rename(source, destination)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("ROLLBACK INCOMPLETE"));
+        assert!(error.to_string().contains("external edit"));
+        assert_eq!(fs::read(first).unwrap(), b"external edit");
+        assert_eq!(
+            fs::read(directory.path().join("b.json")).unwrap(),
+            b"original"
+        );
+        let recovery: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "tmp"))
+            .collect();
+        assert_eq!(recovery.len(), 1);
+        assert_eq!(fs::read(&recovery[0]).unwrap(), b"original");
+        assert!(
+            error
+                .to_string()
+                .contains(recovery[0].file_name().unwrap().to_str().unwrap())
+        );
+    }
+
+    #[test]
     fn replacement_failure_restores_already_committed_files() {
         let directory = tempfile::tempdir().unwrap();
         let mut staged = BTreeMap::new();
@@ -190,15 +244,9 @@ mod tests {
         for name in ["a.json", "b.json"] {
             let path = directory.path().join(name);
             fs::write(&path, b"original").unwrap();
-            let permissions = fs::metadata(&path).unwrap().permissions();
-            staged.insert(
-                path.clone(),
-                stage(&path, b"changed", &permissions).unwrap(),
-            );
-            backups.insert(
-                path.clone(),
-                stage(&path, b"original", &permissions).unwrap(),
-            );
+            let state = FileState::from_metadata(&fs::metadata(&path).unwrap()).unwrap();
+            staged.insert(path.clone(), stage(&path, b"changed", &state).unwrap());
+            backups.insert(path.clone(), stage(&path, b"original", &state).unwrap());
         }
         let mut calls = 0;
         let result = commit(staged, backups, |source, destination| {

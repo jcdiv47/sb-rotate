@@ -3,7 +3,8 @@
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
-    process::{Command, Output},
+    process::{Child, Command, Output, Stdio},
+    time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -17,7 +18,7 @@ struct Fixture {
 impl Fixture {
     fn new(version: &str) -> Self {
         let fixture = Self {
-            root: tempfile::tempdir().unwrap(),
+            root: tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap(),
         };
         fs::create_dir(fixture.root.path().join("clients")).unwrap();
         fixture.write("server.json", &json!({"inbounds": [{"type": "vless", "tag": "home", "users": [{"uuid": "11111111-1111-4111-8111-111111111111"}]}]}));
@@ -373,6 +374,109 @@ fn cli_service_selectors_are_rejected_before_generating_keys() {
             .contains("service-wide")
     );
     assert_eq!(fixture.log(), "version\n");
+}
+
+fn wait_for_child(mut child: Child) -> Output {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "child process timed out: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn competing_cli_writers_fail_fast_and_can_retry_after_the_first_finishes() {
+    struct Running {
+        child: Option<Child>,
+        release: std::path::PathBuf,
+    }
+    impl Drop for Running {
+        fn drop(&mut self) {
+            // Release the validator even if an assertion fails, then reap the CLI.
+            let _ = fs::write(&self.release, b"release");
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let fixture = Fixture::new("1.14.0");
+    let script = fixture.root.path().join("blocking-sing-box");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+case "$1" in
+  version) printf 'sing-box version 1.14.0\n' ;;
+  check)
+    : > "$TEST_READY"
+    count=0
+    while [ ! -e "$TEST_RELEASE" ]; do
+      count=$((count + 1))
+      [ "$count" -lt 600 ] || exit 1
+      sleep 0.05
+    done ;;
+  *) exit 42 ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let ready = fixture.root.path().join(".validator-ready");
+    let release = fixture.root.path().join(".validator-release");
+    let originals = fixture.originals();
+    let spawn = |value: &str| {
+        fixture
+            .command("set")
+            .args(["--kind", "server", "--value", value, "--sing-box"])
+            .arg(&script)
+            .env("TEST_READY", &ready)
+            .env("TEST_RELEASE", &release)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = Running {
+        child: Some(spawn("first.example")),
+        release: release.clone(),
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !ready.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "first writer never reached validation"
+        );
+        assert!(
+            first.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "first writer exited early"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let second = wait_for_child(spawn("second.example"));
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8(second.stderr)
+            .unwrap()
+            .contains("another sb-rotate writer")
+    );
+    assert_eq!(fixture.originals(), originals);
+    fs::write(&release, b"release").unwrap();
+    success(wait_for_child(first.child.take().unwrap()));
+    let current: Value = serde_json::from_slice(&fixture.originals()[1]).unwrap();
+    assert_eq!(current["outbounds"][0]["server"], "first.example");
+    success(wait_for_child(spawn("second.example")));
+    let current: Value = serde_json::from_slice(&fixture.originals()[1]).unwrap();
+    assert_eq!(current["outbounds"][0]["server"], "second.example");
 }
 
 #[test]
