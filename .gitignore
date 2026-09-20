@@ -11,6 +11,8 @@ target/
 /server.json
 /clients/
 .sb-rotate.lock
+.sb-rotate.pending
+.sb-rotate-transaction-*/
 .sb-rotate-*.tmp
 
 # Editor and OS files

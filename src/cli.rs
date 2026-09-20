@@ -44,6 +44,22 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Recover an interrupted transaction; does not require sing-box.
+    Recover {
+        /// Private transaction directory reported by a failed mutation.
+        #[arg(
+            long,
+            required_unless_present = "directory",
+            conflicts_with = "directory"
+        )]
+        journal: Option<PathBuf>,
+        /// Find the pending journal through a server/client config directory.
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        /// Show recovery status without changing configs or journal metadata.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Validate the complete server set and each independent client config.
     Check {
         #[command(flatten)]
@@ -52,13 +68,14 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn input(&self) -> &Input {
+    pub fn input(&self) -> Option<&Input> {
         match self {
             Self::Inspect { input, .. }
             | Self::Plan { input, .. }
             | Self::Rotate { input, .. }
             | Self::Set { input, .. }
-            | Self::Check { input } => input,
+            | Self::Check { input } => Some(input),
+            Self::Recover { .. } => None,
         }
     }
 }

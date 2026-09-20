@@ -480,6 +480,133 @@ esac
 }
 
 #[test]
+fn recover_cli_restores_an_interrupted_journal_without_singbox() {
+    use base64::engine::general_purpose::STANDARD;
+    use sha2::{Digest, Sha256};
+    use std::{
+        os::unix::{ffi::OsStrExt, fs::MetadataExt},
+        path::Path,
+    };
+    let fixture = Fixture::new("1.14.0");
+    let originals = fixture.originals();
+    let root = fixture.root.path();
+    let journal = root.join(".sb-rotate-transaction-cli-test");
+    fs::create_dir(&journal).unwrap();
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+    let encode = |path: &Path| STANDARD.encode(path.as_os_str().as_bytes());
+    // This fixture deliberately specifies the versioned on-disk format, testing
+    // the public recovery CLI rather than calling internal transaction helpers.
+    let signature = |path: &Path| {
+        let metadata = fs::metadata(path).unwrap();
+        json!({"sha256": format!("{:x}", Sha256::digest(fs::read(path).unwrap())), "state": {
+            "length": metadata.len(), "modified": metadata.modified().unwrap(), "mode": metadata.mode(),
+            "device": metadata.dev(), "inode": metadata.ino(), "links": metadata.nlink(), "uid": metadata.uid(), "gid": metadata.gid()
+        }})
+    };
+    let mut entries = Vec::new();
+    let mut staged = Vec::new();
+    for (index, name) in ["server.json", "clients/phone.json"].iter().enumerate() {
+        let file = root.join(name);
+        let temp = file
+            .parent()
+            .unwrap()
+            .join(format!(".sb-rotate-test-{index}.tmp"));
+        let before = fs::read(&file).unwrap();
+        let after = String::from_utf8(before.clone()).unwrap().replace(
+            "11111111-1111-4111-8111-111111111111",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        );
+        fs::write(journal.join(format!("{index}.original")), before).unwrap();
+        fs::write(&temp, after).unwrap();
+        fs::set_permissions(&temp, fs::metadata(&file).unwrap().permissions()).unwrap();
+        entries.push(json!({"file": encode(&file), "staged": encode(&temp), "original": signature(&file), "installed": signature(&temp)}));
+        staged.push((file, temp));
+    }
+    let clients = root.join("clients");
+    let manifest = json!({"version": 1, "platform": std::env::consts::OS,
+        "directories": [encode(root), encode(&clients)], "entries": entries,
+        "sources": {encode(&root.join("server.json")): encode(&root.join("server.json")), encode(&clients): encode(&clients)},
+        "inventories": [{"directory": encode(&clients), "files": {encode(Path::new("phone.json")): encode(&clients.join("phone.json"))}}],
+        "unchanged": []});
+    fs::write(
+        journal.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    for directory in [root, clients.as_path()] {
+        fs::write(
+            directory.join(".sb-rotate.pending"),
+            serde_json::to_vec(&json!({"version": 1, "journal": encode(&journal)})).unwrap(),
+        )
+        .unwrap();
+    }
+    fs::write(journal.join("started"), b"1\n").unwrap();
+    fs::rename(&staged[0].1, &staged[0].0).unwrap();
+    let interrupted = fixture.originals();
+    let blocked = fixture
+        .command("rotate")
+        .args(["--kind", "vless-uuid"])
+        .output()
+        .unwrap();
+    assert!(!blocked.status.success());
+    assert!(
+        String::from_utf8(blocked.stderr)
+            .unwrap()
+            .contains("pending config transaction")
+    );
+    assert_eq!(fixture.log(), "version\n");
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+            .arg("recover")
+            .args(args)
+            .env("SING_BOX", root.join("nonexistent-sing-box"))
+            .output()
+            .unwrap()
+    };
+    let preview = success(run(&[
+        "--journal".as_ref(),
+        journal.as_os_str(),
+        "--dry-run".as_ref(),
+    ]));
+    assert!(preview.contains("installed replacement"));
+    assert_eq!(fixture.originals(), interrupted);
+    let completed = success(run(&["--directory".as_ref(), clients.as_os_str()]));
+    assert!(completed.contains("Recovery complete"));
+    assert_eq!(fixture.originals(), originals);
+    assert!(!journal.exists());
+    assert!(!root.join(".sb-rotate.pending").exists());
+    assert!(!clients.join(".sb-rotate.pending").exists());
+    assert_eq!(fixture.log(), "version\n"); // recovery never called sing-box
+}
+
+#[test]
+fn recover_cli_requires_one_locator_and_reports_missing_transactions() {
+    let fixture = Fixture::new("1.14.0");
+    let output = Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+        .args(["recover"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let output = Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+        .args(["recover", "--journal", "/unused", "--directory", "/unused"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let output = Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+        .args(["recover", "--directory"])
+        .arg(fixture.root.path())
+        .env("SING_BOX", "does-not-exist")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("no pending transaction")
+    );
+}
+
+#[test]
 fn path_lookup_is_the_final_executable_fallback() {
     let fixture = Fixture::new("1.14.0");
     fixture.binary("sing-box", "1.14.0");

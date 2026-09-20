@@ -1,18 +1,27 @@
 //! Filesystem checks shared by config snapshots and mutation locks.
 use std::{
-    fs::{self, File, Metadata, Permissions},
-    io::Read,
+    fs::{self, File, Metadata},
+    io::{Read, Write},
     path::Path,
     time::SystemTime,
 };
 
-use anyhow::{Context, Result, ensure};
+#[cfg(unix)]
+use std::fs::Permissions;
 
-#[derive(Clone, PartialEq, Eq)]
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use tempfile::{Builder, TempPath};
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FileState {
     length: u64,
     modified: Option<SystemTime>,
-    pub permissions: Permissions,
+    #[cfg(unix)]
+    mode: u32,
+    #[cfg(not(unix))]
+    readonly: bool,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -33,7 +42,10 @@ impl FileState {
         Ok(Self {
             length: metadata.len(),
             modified: metadata.modified().ok(),
-            permissions: metadata.permissions(),
+            #[cfg(unix)]
+            mode: metadata.mode(),
+            #[cfg(not(unix))]
+            readonly: metadata.permissions().readonly(),
             #[cfg(unix)]
             device: metadata.dev(),
             #[cfg(unix)]
@@ -63,11 +75,23 @@ impl FileState {
         self.ensure_single_link(path)?;
         #[cfg(windows)]
         ensure!(
-            !self.permissions.readonly(),
+            !self.readonly,
             "cannot atomically replace a read-only Windows config: {}",
             path.display()
         );
         Ok(())
+    }
+
+    /// A restored original has a new inode/mtime; compare only its attributes.
+    pub fn same_attributes(&self, other: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            (self.mode, self.uid, self.gid) == (other.mode, other.uid, other.gid)
+        }
+        #[cfg(not(unix))]
+        {
+            self.readonly == other.readonly
+        }
     }
 
     pub fn restore_attributes(&self, file: &File) -> Result<()> {
@@ -87,7 +111,18 @@ impl FileState {
             }
         }
         // chown can clear mode bits, so permissions are restored afterwards.
-        file.set_permissions(self.permissions.clone())
+        #[cfg(unix)]
+        let permissions = {
+            use std::os::unix::fs::PermissionsExt;
+            Permissions::from_mode(self.mode)
+        };
+        #[cfg(not(unix))]
+        let permissions = {
+            let mut permissions = file.metadata()?.permissions();
+            permissions.set_readonly(self.readonly);
+            permissions
+        };
+        file.set_permissions(permissions)
             .context("preserving config permissions")?;
         Ok(())
     }
@@ -152,4 +187,58 @@ pub(crate) fn read_snapshot(path: &Path) -> Result<(Vec<u8>, FileState)> {
         path.display()
     );
     Ok((bytes, after))
+}
+
+pub(crate) fn stage(path: &Path, bytes: &[u8], state: &FileState) -> Result<TempPath> {
+    let parent = path
+        .parent()
+        .context("config file has no parent directory")?;
+    let mut temp = Builder::new()
+        .prefix(".sb-rotate-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("staging {}", path.display()))?;
+    temp.write_all(bytes)?;
+    state.restore_attributes(temp.as_file())?;
+    temp.as_file().sync_all()?;
+    Ok(temp.into_temp_path())
+}
+
+pub(crate) fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    File::open(path)?
+        .sync_all()
+        .with_context(|| format!("syncing directory {}", path.display()))?;
+    // Portable directory fsync is not available on Windows. File data is still
+    // flushed, but Windows recovery guarantees cover process interruption only.
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+pub(crate) fn private_directory(parent: &Path, prefix: &str) -> Result<tempfile::TempDir> {
+    let mut builder = Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(Permissions::from_mode(0o700));
+    }
+    Ok(builder.tempdir_in(parent)?)
+}
+
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }

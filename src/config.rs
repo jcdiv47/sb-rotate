@@ -104,7 +104,7 @@ impl ConfigSet {
                 "config must be an object: {}",
                 path.display()
             );
-            let permissions = state.permissions.clone();
+            let permissions = fs::metadata(path)?.permissions();
             documents.insert(
                 path.clone(),
                 Document {
@@ -126,6 +126,21 @@ impl ConfigSet {
             client_layout,
             source_paths,
         })
+    }
+
+    pub(crate) fn source_aliases(&self) -> &BTreeMap<PathBuf, PathBuf> {
+        &self.source_paths
+    }
+
+    pub(crate) fn inventory_layouts(&self) -> Vec<(PathBuf, BTreeMap<OsString, PathBuf>)> {
+        let mut layouts = Vec::new();
+        if self.server_is_directory {
+            layouts.push((self.server.clone(), self.server_layout.clone()));
+        }
+        if let Some(layout) = &self.client_layout {
+            layouts.push(layout.clone());
+        }
+        layouts
     }
 
     pub(crate) fn lock_directories(&self) -> Result<BTreeSet<PathBuf>> {

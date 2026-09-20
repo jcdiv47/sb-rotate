@@ -194,6 +194,26 @@ sb-rotate check --server ./server-config/ --clients ./clients/
 sb-rotate check --server ./server.json --client ./phone.json
 ```
 
+## Recover an interrupted mutation
+
+Stop other config writers/reload automation and use the same user as the interrupted command:
+
+```bash
+# Preview through either affected config directory.
+sb-rotate recover --directory ./clients --dry-run
+
+# Restore an unfinished transaction, or clean already-finalized metadata.
+sb-rotate recover --directory ./clients
+
+# Alternatively, use the journal path reported by a failed mutation.
+sb-rotate recover --journal /absolute/path/.sb-rotate-transaction-... --dry-run
+
+# Validate restored configs before reloading services.
+sb-rotate check --server ./server.json --clients ./clients/
+```
+
+`recover` itself does not require sing-box. It refuses detected conflicts; do not delete pending markers or journals to bypass recovery. A committed transaction is never rolled back. See the [recovery safety and durability rules](../spec/07-validation-and-writes.md#explicit-recovery).
+
 ## Select sing-box binary
 
 ```bash

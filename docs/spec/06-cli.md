@@ -14,6 +14,7 @@ plan      calculate and display edits without writing
 rotate    generate and apply a supported replacement
 set       propagate an explicitly supplied service property
 check     validate supplied config sets using sing-box
+recover   restore an interrupted transaction or clean completed transaction metadata
 ```
 
 ## Common input options
@@ -235,6 +236,23 @@ sb-rotate check --server ./server.json --client ./phone.json \
   --sing-box /opt/sing-box/bin/sing-box
 ```
 
+## `recover`
+
+```bash
+# Inspect a pending transaction through either affected config directory.
+sb-rotate recover --directory ./clients --dry-run
+
+# Roll back an unfinished transaction (or clean already-finalized metadata).
+sb-rotate recover --directory ./clients
+
+# Use the exact journal path reported by a failed mutation.
+sb-rotate recover --journal /absolute/path/.sb-rotate-transaction-... --dry-run
+```
+
+Exactly one of `--directory` and `--journal` is required. This command does not accept the common server/client input selectors or `--sing-box`, and it works without sing-box installed. It restores exact original bytes and permissions (plus owner/group on Unix), not new generated credentials. Restored files may have new inodes and timestamps; extended attributes and ACLs are not restored. It refuses conflicts instead of providing a force option.
+
+Before replacement begins, a transaction publishes a pending marker in each locked directory. These markers block further overlapping mutations (including no-ops) until recovery completes; interruption during publication may leave only some markers, with no config replacements yet performed. A recorded successful commit is never rolled back; recovery only cleans its metadata. See [planning, validation, and writes](07-validation-and-writes.md#explicit-recovery) for safety and durability limits.
+
 ## Binary resolution
 
 Resolve the executable in this order:
@@ -243,4 +261,4 @@ Resolve the executable in this order:
 2. `SING_BOX`
 3. `sing-box` via `PATH`
 
-Every command verifies `sing-box version` before protocol work.
+Every command except `recover` verifies `sing-box version` before protocol work.

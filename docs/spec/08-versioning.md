@@ -8,7 +8,7 @@ The minimum supported sing-box version is:
 1.14.0
 ```
 
-At startup, commands that inspect or mutate configs run:
+At startup, normal inspection/planning/mutation commands run:
 
 ```bash
 sing-box version
@@ -16,7 +16,7 @@ sing-box version
 
 and parse the reported semantic version.
 
-Versions below 1.14.0 are rejected.
+Versions below 1.14.0 are rejected. The `recover` command is deliberately exempt: it operates on protected byte backups and transaction metadata and must work even when sing-box is missing or broken.
 
 Pre-release versions are not required to satisfy the minimum unless their semantic version compares greater than or equal to the release boundary.
 

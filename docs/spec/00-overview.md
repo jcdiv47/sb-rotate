@@ -10,9 +10,10 @@ The main problems are:
 2. discover which server user identity a client uses;
 3. rotate credentials or key material without leaving related configs inconsistent;
 4. propagate service-level connection changes to all clients of a service;
-5. validate the resulting configs with sing-box before committing them.
+5. validate the resulting configs with sing-box before committing them;
+6. recover interrupted multi-file mutations without silently overwriting detected external changes.
 
-The first supported sing-box version is **1.14.0**.
+The first supported sing-box version is **1.14.0**. Recovery is a protocol-independent operation and does not require sing-box to be installed.
 
 ## Supported protocols in v1
 
@@ -58,6 +59,10 @@ Examples:
 
 A complete, in-memory list of edits that must succeed together.
 
+### Recovery journal
+
+A private, versioned record of an in-progress mutation: original-byte backups, checksums, file attributes, and source inventory snapshots. Pending markers identify the journal from each locked config directory and block overlapping mutations. Journals are removed after successful commit or recovery; they are not a backup archive.
+
 ## High-level architecture
 
 ```text
@@ -75,8 +80,14 @@ write temporary copies
     ↓
 sing-box check
     ↓
+persist recovery journal and pending markers
+    ↓
 replace changed files
+    ↓
+record commit decision and clean recovery metadata
 ```
+
+Interrupted, unfinished commits can be explicitly rolled back with `recover`. Committed transactions are never undone by recovery; only their remaining metadata is cleaned. Recovery refuses detected conflicts and can resume an interrupted rollback. See [planning, validation, and writes](07-validation-and-writes.md#explicit-recovery) for the full state and durability rules.
 
 ## Scope rules
 
@@ -117,6 +128,8 @@ The initial implementation does not:
 
 - infer deployment topology from DNS, public IP, NAT, or ports;
 - manage remote hosts;
+- provide atomic multi-file visibility to concurrent readers;
+- maintain a permanent backup archive or offer forced recovery/automatic roll-forward;
 - reload or restart sing-box;
 - update certificates or DNS records;
 - preserve JSON comments or exact formatting;

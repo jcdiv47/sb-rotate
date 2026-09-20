@@ -18,7 +18,8 @@ Currently supported:
 - `check`: server file/config-directory validation and independent client validation;
 - `plan` / `rotate`: `vless-uuid`, `hysteria2-password`, `vless-reality-short-id`, `vless-reality-keypair`, and `hysteria2-obfs-password`;
 - `set`: `server`, `server-port`, `server-ports`, and `tls-server-name`, with `--dry-run` for a read-only preview;
-- masked passwords, private keys, and short IDs; staged validation, permission-preserving file replacement, and rollback on ordinary replacement failures.
+- `recover`: preview or roll back an interrupted multi-file transaction without needing sing-box;
+- masked passwords, private keys, and short IDs; staged validation, permission-preserving replacement, durable rollback journals, and automatic rollback on ordinary replacement failures.
 
 Shared identities rotate across every discovered occurrence. Short-ID rotation assigns an independent ID to each selected Reality outbound, retains IDs needed by unselected clients, and preserves unattributed accepted IDs. Whole-service operations require a single matching service (use `--inbound-tag` to disambiguate), reject `--client` / `--client-tag`, and use `--clients` to supply the client inventory. They do not edit server listen addresses/ports or automatically enable TLS/obfs.
 
@@ -33,7 +34,7 @@ cargo clippy --all-targets -- -D warnings
 ./target/release/sb-rotate --help
 ```
 
-Rust 1.89+ (edition 2024 and standard-library file locking) is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Default tests use controlled generators/validators and do not require sing-box to be installed.
+Rust 1.89+ (edition 2024 and standard-library file locking) is required. Every operational command except `recover` requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Default tests use controlled generators/validators and do not require sing-box to be installed.
 
 An opt-in integration test exercises all rotations and service properties against the real generators/validator, using temporary configs and certificates (requires sing-box and `openssl`, no running services):
 
@@ -48,10 +49,26 @@ GitHub Actions runs formatting, Clippy, tests, and release builds on Linux, macO
 
 - Supply every client that must stay synchronized. The tool cannot update clients it has not been given. With `--clients`, `--client` narrows selection but does not remove other discovered occurrences of a shared identity.
 - `plan` generates fresh values in memory without writing config files. `rotate` generates a new plan, validates the staged server set and changed clients, then replaces originals. Unchanged files are not rewritten.
-- Mutations use fail-fast, cross-process writer locks on the supplied config directories and resolved file-parent directories. Contending `sb-rotate` writers fail with a retry message before staging/validation. Mutations need permission to create/open these sidecars, including in directories containing unchanged source configs. Empty `.sb-rotate.lock` files intentionally persist; **do not delete them while a command is running**. Kernel locks are released when the process exits, including after a crash. Previews and no-op updates do not create locks.
+- Mutations use fail-fast, cross-process writer locks on the supplied config directories and resolved file-parent directories. Contending `sb-rotate` writers fail with a retry message before staging/validation. Mutations need permission to create/open these sidecars, including in directories containing unchanged source configs. Empty `.sb-rotate.lock` files intentionally persist; **do not delete them while a command is running**. Kernel locks are released when the process exits, including after a crash. Planning previews and no-op updates do not create locks; recovery (including its dry-run) takes writer locks for a consistent assessment.
 - Keep backups and avoid other concurrent config writers. The locks are advisory: external editors/deployers and read-only commands do not participate. Input-path retargeting, server/client directory membership changes, and content/metadata changes detected before commit are rejected. This does not provide snapshot isolation for readers or eliminate races with uncooperative writers. Config directories must be trusted; this is not a sandbox for hostile filesystem changes.
-- Replacements preserve permissions and, on Unix, owner/group. Mutating a hard-linked config is rejected on Unix instead of silently breaking its aliases; read-only Windows destinations are rejected before staging. Extended attributes/ACLs are not copied. Ordinary replacement failures trigger rollback, with retained recovery copies reported if rollback fails or would overwrite a newer external edit. Replacements are atomic **per file**, not across files under power loss/process termination; persistent crash recovery is not implemented.
+- Replacements preserve permissions and, on Unix, owner/group. Mutating a hard-linked config is rejected on Unix instead of silently breaking its aliases; read-only Windows destinations are rejected before staging. Extended attributes/ACLs are not copied. Ordinary replacement failures trigger rollback. Private journals and `.sb-rotate.pending` markers remain if recovery is needed, and overlapping mutations are blocked until recovery completes. Replacements are still atomic **per file**, not across the whole config set: interruption can leave a partial state until you explicitly recover it.
 - Files are strict JSON; changed files are reserialized. Validation uses the command's working directory for relative resource paths. sing-box validation diagnostics are forwarded verbatim and may contain config values.
+
+### Recovering an interrupted mutation
+
+Stop other config writers/reload automation, then run as the same user that performed the mutation:
+
+```bash
+sb-rotate recover --directory ./clients --dry-run
+sb-rotate recover --directory ./clients
+# Alternatively: --journal /absolute/path/.sb-rotate-transaction-...
+```
+
+Recovery rolls back unfinished commits, resumes an interrupted rollback, or only cleans metadata for already-committed/not-started transactions. It refuses external edits, changed input inventories, missing targets/markers, and corrupt backups instead of overwriting them. There is no force mode. Recovery restores original bytes without generating secrets or invoking sing-box; run `check` afterwards before reloading services.
+
+Journals contain **old credentials**. Unix journals are private (0700 directories/0600 files) and must belong to the recovering user; on Windows they inherit the parent directory's ACL, so use private config directories. Recover only trusted, tool-created journals on the original host/platform. Do not delete/edit pending markers or journals to bypass recovery. Completed journals are removed, not kept as a backup archive.
+
+File data is flushed on all supported platforms; directory entries are also synced on Unix. Windows support covers process interruption, not power-loss durability. Recovery tests simulate abrupt process exit at transaction boundaries; they are not power-loss tests. A crash before journal publication or while staging recovery copies can leave unreferenced `.sb-rotate-*.tmp` scratch files; these need manual cleanup only after confirming no writer is active and all pending transactions are resolved.
 
 ## Core model
 

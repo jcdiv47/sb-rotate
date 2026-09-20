@@ -1,18 +1,42 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use sb_rotate::{
     apply, binding,
     cli::{Cli, Command},
     config::ConfigSet,
-    plan, protocol,
+    plan, protocol, recovery,
     singbox::{Executable, require_supported},
 };
 
 fn run(cli: Cli) -> Result<()> {
-    let input = cli.command.input();
+    if let Command::Recover {
+        journal,
+        directory,
+        dry_run,
+    } = &cli.command
+    {
+        let path = match journal {
+            Some(path) => path.clone(),
+            None => recovery::pending_journal(
+                directory
+                    .as_deref()
+                    .context("recovery directory required")?,
+            )?
+            .context("no pending transaction found in this directory")?,
+        };
+        println!("{}", recovery::recover(&path, *dry_run)?);
+        return Ok(());
+    }
+    let input = cli.command.input().context("config input required")?;
     let singbox = Executable::resolve(input.sing_box.as_deref());
     require_supported(&singbox)?;
     let configs = ConfigSet::load(input)?;
+    if matches!(
+        &cli.command,
+        Command::Rotate { .. } | Command::Set { dry_run: false, .. }
+    ) {
+        recovery::check_pending(&configs)?;
+    }
     if matches!(cli.command, Command::Check { .. }) {
         ensure!(
             input.inbound_tag.is_empty() && input.client_tag.is_empty(),
@@ -58,7 +82,7 @@ fn run(cli: Cli) -> Result<()> {
                 println!("Updated {count} config file(s).");
             }
         }
-        Command::Check { .. } => unreachable!(),
+        Command::Check { .. } | Command::Recover { .. } => unreachable!(),
     }
     Ok(())
 }
