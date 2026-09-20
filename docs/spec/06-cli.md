@@ -209,7 +209,11 @@ sb-rotate set --server ./server.json --clients ./clients/ \
   --value 20000:30000,40000
 ```
 
-Service-level `set` operations apply to all bound clients in the selected service. Client selectors are rejected for service-wide properties in v1 rather than allowing a service to drift accidentally.
+Service-level `set` operations apply to all bound clients in the selected service. Client selectors are rejected for service-wide properties in v1 rather than allowing a service to drift accidentally. Supply the client inventory with `--clients`, not `--client`. The same restriction applies to Reality keypair and Hysteria2 obfs rotation.
+
+`set --dry-run` displays the same property edit plan without writing or validating temporary configs. Setting a property to its existing value is a no-op; unchanged files are not rewritten.
+
+`server-ports` accepts comma-delimited ranges/single ports. Single ports are normalized to equal-ended ranges (`40000` becomes `"40000:40000"`) for sing-box compatibility, and scalar `server_port` fields are removed when enabling port hopping.
 
 ## `check`
 

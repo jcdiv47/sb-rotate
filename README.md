@@ -12,14 +12,17 @@ The tool intentionally does not model the complete sing-box schema. It understan
 
 ## Implementation status
 
-The first implementation supports:
+Currently supported:
 
-- `inspect`: VLESS/Hysteria2 service and identity discovery, selectors, unmatched identities, and ambiguity reporting;
+- `inspect`: VLESS/Hysteria2 service and identity discovery, selectors, unmatched identities, ambiguity reporting, and Reality accepted/observed short-ID counts;
 - `check`: server file/config-directory validation and independent client validation;
-- `plan` / `rotate`: `vless-uuid` and `hysteria2-password`, including all discovered occurrences of a shared identity;
-- masked password output, staged validation, permission-preserving file replacement, and rollback on ordinary replacement failures.
+- `plan` / `rotate`: `vless-uuid`, `hysteria2-password`, `vless-reality-short-id`, `vless-reality-keypair`, and `hysteria2-obfs-password`;
+- `set`: `server`, `server-port`, `server-ports`, and `tls-server-name`, with `--dry-run` for a read-only preview;
+- masked passwords, private keys, and short IDs; staged validation, permission-preserving file replacement, and rollback on ordinary replacement failures.
 
-Reality operations, Hysteria2 obfs rotation, and service-property `set` are **not implemented yet**. The specification and examples below describe the full intended v1 interface.
+Shared identities rotate across every discovered occurrence. Short-ID rotation assigns an independent ID to each selected Reality outbound, retains IDs needed by unselected clients, and preserves unattributed accepted IDs. Whole-service operations require a single matching service (use `--inbound-tag` to disambiguate), reject `--client` / `--client-tag`, and use `--clients` to supply the client inventory. They do not edit server listen addresses/ports or automatically enable TLS/obfs.
+
+`set --kind server-ports --value 20000:30000,40000` switches bound Hysteria2 outbounds to port hopping, removes their scalar `server_port`, and writes `["20000:30000", "40000:40000"]` (sing-box requires range syntax). `server-port` rejects port-hopping outbounds rather than silently switching them back.
 
 ### Build and test
 
@@ -30,7 +33,14 @@ cargo clippy --all-targets -- -D warnings
 ./target/release/sb-rotate --help
 ```
 
-A Rust toolchain supporting edition 2024 is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Tests use controlled generators/validators and do not require sing-box to be installed.
+A recent Rust toolchain supporting edition 2024 is required. Every operational command requires **sing-box >=1.14.0**; `1.14.0-beta.*` is below this release boundary and is rejected. Default tests use controlled generators/validators and do not require sing-box to be installed.
+
+An opt-in integration test exercises all rotations and service properties against the real generators/validator, using temporary configs and certificates (requires sing-box and `openssl`, no running services):
+
+```bash
+cargo test --test real_singbox -- --ignored
+# Optionally prefix with SING_BOX=/path/to/sing-box
+```
 
 ### Safety and current limitations
 

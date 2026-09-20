@@ -31,6 +31,9 @@ pub fn check(configs: &ConfigSet, singbox: &impl SingBox) -> Result<()> {
 
 pub fn apply(configs: &ConfigSet, plan: &RotationPlan, singbox: &impl SingBox) -> Result<usize> {
     let changed = plan.materialize(configs)?;
+    if changed.is_empty() {
+        return Ok(0);
+    }
     let mut staged = BTreeMap::new();
     for (path, value) in &changed {
         let mut bytes = serde_json::to_vec_pretty(value)?;

@@ -3,4 +3,5 @@ pub mod binding;
 pub mod cli;
 pub mod config;
 pub mod plan;
+pub mod protocol;
 pub mod singbox;

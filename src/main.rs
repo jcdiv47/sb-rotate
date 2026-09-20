@@ -4,7 +4,7 @@ use sb_rotate::{
     apply, binding,
     cli::{Cli, Command},
     config::ConfigSet,
-    plan,
+    plan, protocol,
     singbox::{Executable, require_supported},
 };
 
@@ -26,12 +26,12 @@ fn run(cli: Cli) -> Result<()> {
         return Ok(());
     }
     let inventory = binding::discover(&configs, input)?;
-    match cli.command {
+    match &cli.command {
         Command::Inspect { protocol, .. } => {
-            println!("{}", inventory.render(&configs, input, protocol))
+            println!("{}", inventory.render(&configs, input, *protocol))
         }
         Command::Plan { kind, .. } | Command::Rotate { kind, .. } => {
-            let plan = plan::identities(&configs, &inventory, input, kind, &singbox)?;
+            let plan = plan::rotation(&configs, &inventory, input, *kind, &singbox)?;
             // Validate edit topology for previews too; plan never creates config files.
             plan.materialize(&configs)?;
             println!("{}", plan.render());
@@ -40,6 +40,22 @@ fn run(cli: Cli) -> Result<()> {
                 println!("Updated {count} config file(s).");
             } else {
                 println!("Preview only; no config files written. Rotate generates fresh values.");
+            }
+        }
+        Command::Set {
+            kind,
+            value,
+            dry_run,
+            ..
+        } => {
+            let plan = protocol::properties::set(&configs, &inventory, input, *kind, value)?;
+            plan.materialize(&configs)?;
+            println!("{}", plan.render());
+            if *dry_run {
+                println!("Preview only; no config files written.");
+            } else {
+                let count = apply::apply(&configs, &plan, &singbox)?;
+                println!("Updated {count} config file(s).");
             }
         }
         Command::Check { .. } => unreachable!(),

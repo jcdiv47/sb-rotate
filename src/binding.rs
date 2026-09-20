@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeSet, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::{
     cli::{Input, Protocol},
     config::ConfigSet,
+    protocol::vless::{client_short_id, normalized_short_id, reality_enabled},
 };
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,14 @@ pub struct ServiceBinding {
     pub protocol: Protocol,
     pub inbound: EndpointRef,
     pub identities: Vec<IdentityBinding>,
+}
+
+impl ServiceBinding {
+    pub fn clients(&self) -> impl Iterator<Item = &EndpointRef> {
+        self.identities
+            .iter()
+            .flat_map(|identity| &identity.clients)
+    }
 }
 
 pub struct UnboundClient {
@@ -260,6 +269,33 @@ impl Inventory {
                 for client in selected {
                     lines.push(format!("    {}", client.label()));
                 }
+            }
+            if service.protocol == Protocol::Vless && reality_enabled(configs, &service.inbound) {
+                let target = service.inbound.field("tls/reality/short_id");
+                let accepted = configs
+                    .value(&target.file, &target.pointer)
+                    .ok()
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                let clients: Vec<_> = service
+                    .clients()
+                    .filter(|client| {
+                        client_selected(client, configs, input) && reality_enabled(configs, client)
+                    })
+                    .collect();
+                let observed: BTreeSet<_> = clients
+                    .iter()
+                    .filter_map(|client| {
+                        client_short_id(configs, client)
+                            .and_then(normalized_short_id)
+                            .ok()
+                    })
+                    .collect();
+                lines.push(format!(
+                    "  reality: short_ids: {accepted} accepted / {} observed; clients: {}",
+                    observed.len(),
+                    clients.len()
+                ));
             }
         }
         for client in &self.unbound {

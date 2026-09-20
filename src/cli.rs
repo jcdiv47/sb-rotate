@@ -18,19 +18,31 @@ pub enum Command {
         #[arg(long, value_enum)]
         protocol: Option<Protocol>,
     },
-    /// Generate and display an identity rotation without writing configs.
+    /// Generate and display a rotation without writing configs.
     Plan {
         #[command(flatten)]
         input: Input,
         #[arg(long, value_enum)]
-        kind: IdentityKind,
+        kind: RotationKind,
     },
-    /// Rotate a shared identity and all its discovered occurrences.
+    /// Rotate an identity, Reality short IDs/keypair, or a shared obfs secret.
     Rotate {
         #[command(flatten)]
         input: Input,
         #[arg(long, value_enum)]
-        kind: IdentityKind,
+        kind: RotationKind,
+    },
+    /// Update a service property on every bound client (never the listen port).
+    Set {
+        #[command(flatten)]
+        input: Input,
+        #[arg(long, value_enum)]
+        kind: PropertyKind,
+        #[arg(long)]
+        value: String,
+        /// Preview without writing config files.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Validate the complete server set and each independent client config.
     Check {
@@ -45,6 +57,7 @@ impl Command {
             Self::Inspect { input, .. }
             | Self::Plan { input, .. }
             | Self::Rotate { input, .. }
+            | Self::Set { input, .. }
             | Self::Check { input } => input,
         }
     }
@@ -98,6 +111,42 @@ impl Protocol {
             Self::Hysteria2 => "password",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RotationKind {
+    VlessUuid,
+    VlessRealityShortId,
+    VlessRealityKeypair,
+    Hysteria2Password,
+    Hysteria2ObfsPassword,
+}
+
+impl RotationKind {
+    pub fn identity(self) -> Option<IdentityKind> {
+        match self {
+            Self::VlessUuid => Some(IdentityKind::VlessUuid),
+            Self::Hysteria2Password => Some(IdentityKind::Hysteria2Password),
+            _ => None,
+        }
+    }
+}
+
+impl From<IdentityKind> for RotationKind {
+    fn from(kind: IdentityKind) -> Self {
+        match kind {
+            IdentityKind::VlessUuid => Self::VlessUuid,
+            IdentityKind::Hysteria2Password => Self::Hysteria2Password,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum PropertyKind {
+    Server,
+    ServerPort,
+    ServerPorts,
+    TlsServerName,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

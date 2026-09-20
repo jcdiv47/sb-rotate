@@ -42,6 +42,12 @@ impl SingBox for FakeSingBox {
         assert_eq!(bytes, 32);
         Ok(format!("secret-{}", self.generate_uuid()?))
     }
+    fn generate_random_hex(&self, _bytes: usize) -> Result<String> {
+        bail!("unexpected hex generator call")
+    }
+    fn generate_reality_keypair(&self) -> Result<sb_rotate::singbox::RealityKeyPair> {
+        bail!("unexpected Reality generator call")
+    }
     fn check_file(&self, path: &Path) -> Result<()> {
         let value = serde_json::from_slice(&fs::read(path)?)?;
         self.checked.borrow_mut().push((false, vec![value]));
@@ -203,7 +209,11 @@ fn selectors_or_within_categories_and_across_categories() {
     )
     .unwrap();
     assert_eq!(plan.edits.len(), 2);
-    assert!(plan.edits.iter().all(|edit| edit.old == "other"));
+    assert!(
+        plan.edits
+            .iter()
+            .all(|edit| edit.old == Some(json!("other")))
+    );
 }
 
 #[test]
@@ -644,7 +654,7 @@ fn generic_materialization_rejects_stale_or_duplicate_edits() {
     )
     .unwrap();
     let old = plan.edits[0].old.clone();
-    plan.edits[0].old = json!("stale");
+    plan.edits[0].old = Some(json!("stale"));
     assert!(plan.materialize(&configs).is_err());
     plan.edits[0].old = old;
     plan.edits.push(plan::Edit {

@@ -111,10 +111,12 @@ struct RotationPlan {
 struct Edit {
     file: PathBuf,
     pointer: JsonPointer,
-    old: serde_json::Value,
-    new: serde_json::Value,
+    old: Option<serde_json::Value>,
+    new: Option<serde_json::Value>,
 }
 ```
+
+`None` denotes an absent object member, distinct from JSON `null`. This supports adding optional fields and removing scalar `server_port` when setting Hysteria2 `server_ports`. The parent object must already exist; planners do not invent TLS/obfs blocks. Duplicate or overlapping edit locations are rejected.
 
 The apply/validation layer does not need to know whether an edit came from VLESS, Reality, or Hysteria2.
 

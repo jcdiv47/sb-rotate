@@ -130,11 +130,13 @@ Sets the Hysteria2 port-hopping list:
 outbound.server_ports
 ```
 
-The CLI accepts repeated values or a comma-delimited value according to the final clap implementation. The logical value is a JSON string array such as:
+The CLI accepts a comma-delimited value, for example `20000:30000,40000`. sing-box 1.14 requires range syntax for each JSON array entry, so single ports are normalized to equal-ended ranges:
 
 ```json
-["20000:30000", "40000"]
+["20000:30000", "40000:40000"]
 ```
+
+Setting `server-ports` removes any scalar `server_port` on each bound outbound. Switching a port-hopping outbound back to scalar mode is not supported by `server-port` in v1.
 
 No server-side listen/NAT changes are implied.
 

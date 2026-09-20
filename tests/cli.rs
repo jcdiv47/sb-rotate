@@ -6,6 +6,7 @@ use std::{
     process::{Command, Output},
 };
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -34,6 +35,8 @@ impl Fixture {
     }
 
     fn binary(&self, name: &str, version: &str) {
+        let private = URL_SAFE_NO_PAD.encode([1u8; 32]);
+        let public = URL_SAFE_NO_PAD.encode([2u8; 32]);
         let script = format!(
             r#"#!/bin/sh
 printf '%s\n' "$*" >> "$TEST_LOG"
@@ -42,6 +45,10 @@ case "$1" in
   generate)
     if [ "$2" = uuid ]; then
       printf 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n'
+    elif [ "$2" = reality-keypair ]; then
+      printf 'PrivateKey: {private}\nPublicKey: {public}\n'
+    elif [ "$4" = --hex ]; then
+      printf '0123456789abcdef\n'
     else
       printf 'aW5kZXBlbmRlbnQtZ2VuZXJhdGVkLXNlY3JldA==\n'
     fi ;;
@@ -68,6 +75,29 @@ esac
             .env_remove("TEST_FAIL_CHECK")
             .args([command, "--server", "server.json", "--clients", "clients"]);
         process
+    }
+
+    fn enable_reality(&self) {
+        for (name, reality) in [
+            (
+                "server.json",
+                json!({"enabled": true, "private_key": "old-private", "short_id": ["aaaaaaaaaaaaaaaa"]}),
+            ),
+            (
+                "clients/phone.json",
+                json!({"enabled": true, "public_key": "old-public", "short_id": "aaaaaaaaaaaaaaaa"}),
+            ),
+        ] {
+            let mut value: Value =
+                serde_json::from_slice(&fs::read(self.root.path().join(name)).unwrap()).unwrap();
+            let endpoints = if name == "server.json" {
+                "inbounds"
+            } else {
+                "outbounds"
+            };
+            value[endpoints][0]["tls"] = json!({"enabled": true, "reality": reality});
+            self.write(name, &value);
+        }
     }
 
     fn log(&self) -> String {
@@ -267,6 +297,82 @@ fn passwords_are_masked_in_cli_and_use_singbox_base64_generator() {
     assert!(!text.contains("old-password"));
     assert!(!text.contains("aW5kZXBlbmRlbnQtZ2VuZXJhdGVkLXNlY3JldA=="));
     assert!(fixture.log().contains("generate rand 32 --base64"));
+}
+
+#[test]
+fn reality_keypair_and_hex_generators_are_wired_to_cli_with_safe_output() {
+    for (kind, command) in [
+        ("vless-reality-keypair", "generate reality-keypair"),
+        ("vless-reality-short-id", "generate rand 8 --hex"),
+    ] {
+        let fixture = Fixture::new("1.14.0");
+        fixture.enable_reality();
+        let originals = fixture.originals();
+        let output = success(
+            fixture
+                .command("plan")
+                .args(["--kind", kind])
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(fixture.originals(), originals);
+        assert!(!output.contains("old-private"));
+        assert!(!output.contains(&URL_SAFE_NO_PAD.encode([1u8; 32])));
+        assert!(!output.contains("0123456789abcdef"));
+        assert!(fixture.log().contains(command));
+        success(
+            fixture
+                .command("rotate")
+                .args(["--kind", kind])
+                .output()
+                .unwrap(),
+        );
+        assert_ne!(fixture.originals(), originals);
+    }
+}
+
+#[test]
+fn set_dry_run_and_commit_never_generate_or_edit_the_server() {
+    let fixture = Fixture::new("1.14.0");
+    let originals = fixture.originals();
+    success(
+        fixture
+            .command("set")
+            .args(["--kind", "server", "--value", "new.example", "--dry-run"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fixture.originals(), originals);
+    assert_eq!(fixture.log(), "version\n");
+    success(
+        fixture
+            .command("set")
+            .args(["--kind", "server", "--value", "new.example"])
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(fixture.originals()[0], originals[0]);
+    let client: Value = serde_json::from_slice(&fixture.originals()[1]).unwrap();
+    assert_eq!(client["outbounds"][0]["server"], "new.example");
+    assert!(!fixture.log().contains("generate"));
+}
+
+#[test]
+fn cli_service_selectors_are_rejected_before_generating_keys() {
+    let fixture = Fixture::new("1.14.0");
+    fixture.enable_reality();
+    let output = fixture
+        .command("rotate")
+        .args(["--kind", "vless-reality-keypair", "--client-tag", "home"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("service-wide")
+    );
+    assert_eq!(fixture.log(), "version\n");
 }
 
 #[test]

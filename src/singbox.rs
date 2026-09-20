@@ -5,12 +5,20 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use semver::Version;
+
+pub struct RealityKeyPair {
+    pub private_key: String,
+    pub public_key: String,
+}
 
 pub trait SingBox {
     fn version(&self) -> Result<Version>;
     fn generate_uuid(&self) -> Result<String>;
     fn generate_random_base64(&self, bytes: usize) -> Result<String>;
+    fn generate_random_hex(&self, bytes: usize) -> Result<String>;
+    fn generate_reality_keypair(&self) -> Result<RealityKeyPair>;
     fn check_file(&self, path: &Path) -> Result<()>;
     fn check_directory(&self, path: &Path) -> Result<()>;
 }
@@ -84,6 +92,23 @@ impl SingBox for Executable {
         self.generate(&["generate", "rand", &bytes.to_string(), "--base64"])
     }
 
+    fn generate_random_hex(&self, bytes: usize) -> Result<String> {
+        let value = self.generate(&["generate", "rand", &bytes.to_string(), "--hex"])?;
+        ensure!(
+            value.len() == bytes * 2 && value.bytes().all(|c| c.is_ascii_hexdigit()),
+            "sing-box returned invalid random hex"
+        );
+        Ok(value.to_ascii_lowercase())
+    }
+
+    fn generate_reality_keypair(&self) -> Result<RealityKeyPair> {
+        let output = self.run(
+            &[OsStr::new("generate"), OsStr::new("reality-keypair")],
+            false,
+        )?;
+        parse_reality_keypair(&output)
+    }
+
     fn check_file(&self, path: &Path) -> Result<()> {
         self.run(
             &[OsStr::new("check"), OsStr::new("-c"), path.as_os_str()],
@@ -101,6 +126,41 @@ impl SingBox for Executable {
         .with_context(|| format!("validating server config directory {}", path.display()))?;
         Ok(())
     }
+}
+
+fn parse_reality_keypair(output: &str) -> Result<RealityKeyPair> {
+    let mut private = None;
+    let mut public = None;
+    for line in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let (label, value) = line
+            .split_once(':')
+            .context("invalid Reality keypair output")?;
+        let value = value.trim();
+        // Never include generator output in an error: it contains a private key.
+        ensure!(
+            URL_SAFE_NO_PAD
+                .decode(value)
+                .is_ok_and(|bytes| bytes.len() == 32),
+            "invalid Reality key encoding"
+        );
+        let target = match label {
+            "PrivateKey" => &mut private,
+            "PublicKey" => &mut public,
+            _ => bail!("unexpected Reality keypair output field"),
+        };
+        ensure!(
+            target.replace(value.to_owned()).is_none(),
+            "duplicate Reality keypair field"
+        );
+    }
+    Ok(RealityKeyPair {
+        private_key: private.context("missing Reality private key")?,
+        public_key: public.context("missing Reality public key")?,
+    })
 }
 
 pub fn require_supported(singbox: &impl SingBox) -> Result<Version> {
@@ -124,6 +184,26 @@ fn parse_version(output: &str) -> Result<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_keypairs_and_never_echoes_malformed_private_material() {
+        let private = URL_SAFE_NO_PAD.encode([1u8; 32]);
+        let public = URL_SAFE_NO_PAD.encode([2u8; 32]);
+        let output = format!("PrivateKey: {private}\r\nPublicKey: {public}\r\n");
+        let pair = parse_reality_keypair(&output).unwrap();
+        assert_eq!(pair.private_key, private);
+        assert_eq!(pair.public_key, public);
+        for bad in [
+            format!("PrivateKey: {private}"),
+            format!("{output}PrivateKey: {private}"),
+            "PrivateKey: secret-invalid-material\nPublicKey: invalid".to_owned(),
+            format!("PrivateKey: {private}\nUnexpected: {public}"),
+        ] {
+            let error = parse_reality_keypair(&bad).err().unwrap().to_string();
+            assert!(!error.contains(&private));
+            assert!(!error.contains("secret-invalid-material"));
+        }
+    }
 
     #[test]
     fn parses_versions_and_respects_release_boundary() {
