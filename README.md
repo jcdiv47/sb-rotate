@@ -30,7 +30,8 @@ Shared user credentials rotate across every discovered occurrence. Short-ID rota
 Download a prebuilt binary from [GitHub Releases](https://github.com/jcdiv47/sb-rotate/releases). Rust is not required on the server; operational commands other than `recover` still require sing-box >=1.14.0.
 
 ```bash
-base="https://github.com/jcdiv47/sb-rotate/releases/download/v0.1.0"
+base="https://github.com/jcdiv47/sb-rotate/releases/latest/download"
+# To pin a version instead: .../releases/download/v0.2.0
 curl -fLO "$base/sb-rotate-linux-amd64.tar.gz"
 curl -fLO "$base/SHA256SUMS"
 sha256sum --check SHA256SUMS && \

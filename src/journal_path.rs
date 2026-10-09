@@ -46,10 +46,8 @@ impl<'de> Deserialize<'de> for JournalPath {
             if bytes.len() % 2 != 0 {
                 return Err(D::Error::custom("invalid Windows journal path"));
             }
-            let wide: Vec<_> = bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect();
+            let (pairs, _) = bytes.as_chunks::<2>();
+            let wide: Vec<_> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
             OsString::from_wide(&wide)
         };
         #[cfg(not(any(unix, windows)))]
