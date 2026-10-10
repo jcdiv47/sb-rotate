@@ -1,0 +1,45 @@
+name: Latest sing-box
+
+# Early warning for upstream changes. Failures here do not block merges; the
+# supported floor is tested against a pinned release in ci.yml.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sing-box:
+    name: Real sing-box ${{ matrix.channel }} / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, prerelease]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve newest ${{ matrix.channel }} release
+        id: release
+        run: |
+          if [[ "${{ matrix.channel }}" == stable ]]; then
+            tag="$(gh api repos/SagerNet/sing-box/releases/latest --jq .tag_name)"
+          else
+            tag="$(gh api 'repos/SagerNet/sing-box/releases?per_page=1' --jq '.[0].tag_name')"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Install sing-box ${{ steps.release.outputs.tag }}
+        run: .github/scripts/install-sing-box.sh "${{ steps.release.outputs.tag }}"
+      - run: cargo test --locked --test real_singbox -- --ignored
