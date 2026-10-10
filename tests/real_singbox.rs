@@ -110,18 +110,11 @@ fn real_generators_validation_and_service_operations() -> Result<()> {
             .collect()
     };
     successful(run("check", &[])?)?;
-    for kind in [
-        "vless-uuid",
-        "hysteria2-password",
-        "vless-reality-keypair",
-        "hysteria2-obfs-password",
-    ] {
-        let before = snapshot()?;
-        successful(run("plan", &["--kind", kind])?)?;
-        assert_eq!(before, snapshot()?, "plan must be read-only");
-        successful(run("rotate", &["--kind", kind])?)?;
-        successful(run("check", &[])?)?;
-    }
+    let before = snapshot()?;
+    successful(run("plan", &[])?)?;
+    assert_eq!(before, snapshot()?, "plan must be read-only");
+    successful(run("rotate", &[])?)?;
+    successful(run("check", &[])?)?;
     let server = read(&server_path)?;
     assert!(server["inbounds"][0]["tls"]["reality"]["private_key"] != keys.private_key);
     for path in [&phone_path, &laptop_path] {
@@ -140,39 +133,40 @@ fn real_generators_validation_and_service_operations() -> Result<()> {
         );
         assert!(client["outbounds"][0]["tls"]["reality"]["public_key"] != keys.public_key);
     }
+    // Full rotation also replaced every short ID, so track the laptop's current one.
+    let laptop_id = read(&laptop_path)?["outbounds"][0]["tls"]["reality"]["short_id"].clone();
+    assert_ne!(laptop_id, json!(original_id));
+    let public_key = read(&laptop_path)?["outbounds"][0]["tls"]["reality"]["public_key"].clone();
     let phone = phone_path
         .to_str()
         .context("temporary path must be UTF-8")?;
     successful(run(
         "rotate",
-        &[
-            "--kind",
-            "vless-reality-short-id",
-            "--client",
-            phone,
-            "--client-tag",
-            "vless-home",
-        ],
+        &["--client", phone, "--client-tag", "vless-home"],
     )?)?;
     let server = read(&server_path)?;
     let ids = server["inbounds"][0]["tls"]["reality"]["short_id"]
         .as_array()
         .unwrap();
-    assert!(
-        ids.contains(&json!(original_id)),
-        "unselected laptop still uses the original ID"
-    );
+    assert!(ids.contains(&laptop_id), "unselected laptop keeps its ID");
+    for path in [&phone_path, &laptop_path] {
+        assert_eq!(
+            read(path)?["outbounds"][0]["tls"]["reality"]["public_key"],
+            public_key,
+            "a partial selection keeps the shared keypair"
+        );
+    }
     assert!(ids.contains(&read(&phone_path)?["outbounds"][0]["tls"]["reality"]["short_id"]));
     assert_eq!(
         read(&laptop_path)?["outbounds"][0]["tls"]["reality"]["short_id"],
-        original_id
+        laptop_id
     );
-    successful(run("rotate", &["--kind", "vless-reality-short-id"])?)?;
+    successful(run("rotate", &["--type", "vless"])?)?;
     let server = read(&server_path)?;
     let ids = server["inbounds"][0]["tls"]["reality"]["short_id"]
         .as_array()
         .unwrap();
-    assert!(!ids.contains(&json!(original_id)));
+    assert!(!ids.contains(&laptop_id));
     assert!(
         ids.contains(&json!("cccccccccccccccc")),
         "unattributed IDs must be preserved"
@@ -295,5 +289,35 @@ fn real_generators_validation_and_service_operations() -> Result<()> {
         snapshot()?,
         "failed real validation must never replace originals"
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires real sing-box >=1.14.0"]
+fn real_merge_builds_targets_in_manifest_order() -> Result<()> {
+    let singbox = Executable::resolve(None);
+    require_supported(&singbox)?;
+    let root = tempfile::tempdir()?;
+    // The device file sorts after the shared one, so only the manifest fixes the order.
+    write(
+        &root.path().join("a-shared.json"),
+        &json!({"outbounds": [{"type": "direct", "tag": "Direct"}],
+            "route": {"rules": [{"action": "sniff"}], "final": "Direct"}}),
+    )?;
+    write(
+        &root.path().join("z-device.json"),
+        &json!({"log": {"level": "warn"}, "route": {"rules": [{"protocol": "dns", "action": "hijack-dns"}]}}),
+    )?;
+    write(
+        &root.path().join("build.json"),
+        &json!({"targets": {"device": {"fragments": ["z-device.json", "a-shared.json"]}}}),
+    )?;
+    let report = sb_rotate::build::build(&root.path().join("build.json"), &[], None, &singbox)?;
+    assert_eq!(report.lines.len(), 1);
+    let output = read(&root.path().join("out/device.json"))?;
+    assert_eq!(output["log"]["level"], "warn");
+    assert_eq!(output["route"]["rules"][0]["action"], "hijack-dns");
+    assert_eq!(output["route"]["rules"][1]["action"], "sniff");
+    singbox.check_file(&root.path().join("out/device.json"))?;
     Ok(())
 }

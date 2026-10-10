@@ -4,14 +4,14 @@ use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
 use crate::{
-    binding::{EndpointRef, Inventory, ServiceBinding, client_selected},
-    cli::{Input, Protocol, RotationKind},
+    binding::{EndpointRef, ServiceBinding, client_selected},
+    cli::Input,
     config::ConfigSet,
     plan::{OperationKind, RotationPlan},
     singbox::SingBox,
 };
 
-use super::{endpoint_value, one_service, service_plan, string_field};
+use super::{endpoint_value, service_plan, string_field, warn_unsupplied_users};
 
 pub(crate) fn reality_enabled(configs: &ConfigSet, endpoint: &EndpointRef) -> bool {
     endpoint_value(configs, endpoint).is_ok_and(|value| {
@@ -21,28 +21,6 @@ pub(crate) fn reality_enabled(configs: &ConfigSet, endpoint: &EndpointRef) -> bo
                 .and_then(Value::as_bool)
                 == Some(true)
     })
-}
-
-pub fn keypair(
-    configs: &ConfigSet,
-    inventory: &Inventory,
-    input: &Input,
-    singbox: &impl SingBox,
-) -> Result<RotationPlan> {
-    let service = one_service(
-        configs,
-        inventory,
-        input,
-        Some(Protocol::Vless),
-        false,
-        |service| {
-            reality_enabled(configs, &service.inbound)
-                && service
-                    .clients()
-                    .any(|client| reality_enabled(configs, client))
-        },
-    )?;
-    keypair_for_service(configs, service, singbox)
 }
 
 pub(crate) fn keypair_for_service(
@@ -75,10 +53,8 @@ pub(crate) fn keypair_for_service(
             "generated Reality public key is unchanged; retry"
         );
     }
-    let mut plan = service_plan(
-        service,
-        OperationKind::Rotate(RotationKind::VlessRealityKeypair),
-    );
+    let mut plan = service_plan(service, OperationKind::Rotate);
+    warn_unsupplied_users(&mut plan, service, "Reality public key");
     plan.edit(
         configs,
         service.inbound.field("tls/reality/private_key"),
@@ -113,28 +89,6 @@ pub(crate) fn client_short_id<'a>(configs: &'a ConfigSet, client: &EndpointRef) 
             .as_str()
             .context("client Reality short_id must be a string"),
     }
-}
-
-pub fn short_ids(
-    configs: &ConfigSet,
-    inventory: &Inventory,
-    input: &Input,
-    singbox: &impl SingBox,
-) -> Result<RotationPlan> {
-    let service = one_service(
-        configs,
-        inventory,
-        input,
-        Some(Protocol::Vless),
-        true,
-        |service| {
-            reality_enabled(configs, &service.inbound)
-                && service.clients().any(|client| {
-                    reality_enabled(configs, client) && client_selected(client, configs, input)
-                })
-        },
-    )?;
-    short_ids_for_service(configs, service, input, singbox)
 }
 
 pub(crate) fn short_ids_for_service(
@@ -181,10 +135,7 @@ pub(crate) fn short_ids_for_service(
         }
     }
     ensure!(!selected.is_empty(), "no Reality client outbounds selected");
-    let mut plan = service_plan(
-        service,
-        OperationKind::Rotate(RotationKind::VlessRealityShortId),
-    );
+    let mut plan = service_plan(service, OperationKind::Rotate);
     let mut replacements = Vec::new();
     for client in selected {
         let value = singbox.generate_random_hex(8)?;

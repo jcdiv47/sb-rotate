@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Result, bail};
 use sb_rotate::{
     apply, binding,
-    cli::{IdentityKind, Input, Protocol},
+    cli::{Input, Protocol},
     config::ConfigSet,
     plan,
     singbox::{SingBox, require_supported},
@@ -66,6 +66,9 @@ impl SingBox for FakeSingBox {
         self.checked.borrow_mut().push((true, values));
         self.after_check()
     }
+    fn merge(&self, _: &Path, _: &[std::path::PathBuf]) -> Result<()> {
+        unreachable!("rotation never merges configs")
+    }
 }
 
 impl FakeSingBox {
@@ -91,7 +94,7 @@ impl Fixture {
         fs::create_dir(root.path().join("clients")).unwrap();
         let input = Input {
             server: root.path().join("server.json"),
-            clients: Some(root.path().join("clients")),
+            clients: vec![root.path().join("clients")],
             ..Input::default()
         };
         let fixture = Self { root, input };
@@ -168,14 +171,8 @@ fn identity_selection_expands_to_all_shared_clients_and_duplicate_server_users()
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     assert_eq!(sb.generated.get(), 1);
     assert_eq!(plan.edits.len(), 5); // two server users + three client occurrences
     assert!(plan.edits.iter().all(|edit| edit.new == plan.edits[0].new));
@@ -204,7 +201,7 @@ fn selectors_or_within_categories_and_across_categories() {
         &configs,
         &inventory,
         &fixture.input,
-        IdentityKind::VlessUuid,
+        Protocol::Vless,
         &FakeSingBox::default(),
     )
     .unwrap();
@@ -236,27 +233,12 @@ fn duplicate_identity_across_inbounds_is_ambiguous_until_server_selected() {
             .contains("ambiguous")
     );
     let sb = FakeSingBox::default();
-    assert!(
-        plan::identities(
-            &configs,
-            &inventory,
-            &fixture.input,
-            IdentityKind::VlessUuid,
-            &sb
-        )
-        .is_err()
-    );
+    assert!(plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).is_err());
     assert_eq!(sb.generated.get(), 0);
     fixture.input.inbound_tag = vec!["home".to_owned()];
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     assert_eq!(plan.edits.len(), 4);
     assert!(
         plan.edits
@@ -284,7 +266,7 @@ fn unmatched_clients_are_reported_and_never_rotated() {
         &configs,
         &inventory,
         &fixture.input,
-        IdentityKind::VlessUuid,
+        Protocol::Vless,
         &FakeSingBox::default(),
     )
     .unwrap();
@@ -315,7 +297,7 @@ fn hysteria_passwords_are_grouped_rotated_and_masked() {
         &configs,
         &inventory,
         &fixture.input,
-        IdentityKind::Hysteria2Password,
+        Protocol::Hysteria2,
         &FakeSingBox::default(),
     )
     .unwrap();
@@ -340,14 +322,8 @@ fn validation_failure_leaves_every_original_byte_untouched() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     sb.fail_check.set(true);
     assert!(apply::apply(&configs, &plan, &sb).is_err());
     for (path, doc) in &configs.documents {
@@ -363,14 +339,8 @@ fn successful_rotation_validates_and_preserves_unrelated_fields() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     assert_eq!(apply::apply(&configs, &plan, &sb).unwrap(), 3);
     assert_eq!(sb.checked.borrow().len(), 3);
     let server = fixture.read("server.json");
@@ -398,14 +368,8 @@ fn directory_server_is_validated_as_a_complete_set() {
     let configs = fixture.load();
     let sb = FakeSingBox::default();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     apply::apply(&configs, &plan, &sb).unwrap();
     let checks = sb.checked.borrow();
     assert!(checks[0].0);
@@ -440,14 +404,8 @@ fn stale_source_is_not_overwritten_after_validation() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     sb.change_during_check
         .replace(Some(fixture.path("server.json")));
     let error = apply::apply(&configs, &plan, &sb).unwrap_err();
@@ -465,26 +423,11 @@ fn generator_failure_and_empty_selection_do_not_write() {
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
     sb.fail_generate.set(true);
-    assert!(
-        plan::identities(
-            &configs,
-            &inventory,
-            &fixture.input,
-            IdentityKind::VlessUuid,
-            &sb
-        )
-        .is_err()
-    );
+    assert!(plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).is_err());
     fixture.input.client_tag = vec!["missing".to_owned()];
-    let error = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .err()
-    .unwrap();
+    let error = plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb)
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("no matched identities"));
     for (path, doc) in &configs.documents {
         assert_eq!(fs::read(path).unwrap(), doc.original);
@@ -508,7 +451,7 @@ fn loading_deduplicates_explicit_clients_and_ignores_nested_or_non_json_files() 
 #[test]
 fn explicit_client_without_directory_is_supported() {
     let mut fixture = Fixture::new();
-    fixture.input.clients = None;
+    fixture.input.clients.clear();
     fixture.input.client = vec![fixture.path("clients/phone.json")];
     assert_eq!(fixture.load().client_files.len(), 1);
 }
@@ -549,14 +492,8 @@ fn replacement_preserves_private_config_permissions() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     apply::apply(&configs, &plan, &sb).unwrap();
     assert_eq!(
         fs::metadata(fixture.path("server.json"))
@@ -574,14 +511,8 @@ fn last_client_validation_failure_still_preserves_all_originals() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     sb.fail_check_number.set(3);
     assert!(apply::apply(&configs, &plan, &sb).is_err());
     assert_eq!(sb.checked.borrow().len(), 3);
@@ -607,7 +538,7 @@ fn generated_collision_with_unselected_server_identity_is_rejected() {
         &configs,
         &inventory,
         &fixture.input,
-        IdentityKind::VlessUuid,
+        Protocol::Vless,
         &FakeSingBox::default(),
     )
     .err()
@@ -625,14 +556,8 @@ fn unmodified_clients_are_not_rewritten_or_validated_during_rotation() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     apply::apply(&configs, &plan, &sb).unwrap();
     assert_eq!(sb.checked.borrow().len(), 3);
     let path = fixture.path("clients/unmatched.json");
@@ -645,14 +570,8 @@ fn generic_materialization_rejects_stale_or_duplicate_edits() {
     let configs = fixture.load();
     let inventory = binding::discover(&configs, &fixture.input).unwrap();
     let sb = FakeSingBox::default();
-    let mut plan = plan::identities(
-        &configs,
-        &inventory,
-        &fixture.input,
-        IdentityKind::VlessUuid,
-        &sb,
-    )
-    .unwrap();
+    let mut plan =
+        plan::identities(&configs, &inventory, &fixture.input, Protocol::Vless, &sb).unwrap();
     let old = plan.edits[0].old.clone();
     plan.edits[0].old = Some(json!("stale"));
     assert!(plan.materialize(&configs).is_err());

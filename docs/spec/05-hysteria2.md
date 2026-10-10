@@ -83,7 +83,7 @@ Default generator:
 sing-box generate rand 32 --base64
 ```
 
-Requires Hysteria2 obfs to be configured for the service.
+Requires Hysteria2 obfs to be configured for the service. The shared obfs password rotates only when every bound outbound of the inbound is selected, and then for every bound client.
 
 Update:
 

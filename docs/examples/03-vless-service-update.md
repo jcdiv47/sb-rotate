@@ -51,13 +51,14 @@ This updates client `tls.server_name` across the service.
 
 ## Rotate the Reality keypair
 
+The keypair rotates as part of every VLESS rotation of a Reality inbound, together with its users' UUIDs and short IDs:
+
 ```bash
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --inbound-tag vless-home \
-  --kind vless-reality-keypair
+  --inbound-tag vless-home
 ```
 
-The operation runs:
+The keypair step runs:
 
 ```bash
 sing-box generate reality-keypair

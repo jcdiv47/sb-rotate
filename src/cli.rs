@@ -30,7 +30,7 @@ pub enum Command {
         #[command(flatten)]
         selection: RotationSelection,
     },
-    /// Rotate configured credentials/key material for a sing-box type.
+    /// Rotate the selected outbounds' credentials (and fully selected inbounds' shared keys).
     Rotate {
         #[command(flatten)]
         input: Input,
@@ -65,6 +65,23 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Merge client fragments into one validated config per target (see --manifest).
+    Build {
+        /// JSON build manifest; its relative paths resolve from its directory.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Targets to build (default: all).
+        targets: Vec<String>,
+        /// Also copy each output to publish_dir/publish_as from the manifest.
+        #[arg(long)]
+        publish: bool,
+        /// Publish every file as root:root 0644 via `sudo install`, after all builds pass.
+        #[arg(long, requires = "publish")]
+        sudo: bool,
+        /// Executable override; otherwise SING_BOX, then sing-box on PATH.
+        #[arg(long)]
+        sing_box: Option<PathBuf>,
+    },
     /// Validate the complete server set and each independent client config.
     Check {
         #[command(flatten)]
@@ -80,7 +97,7 @@ impl Command {
             | Self::Rotate { input, .. }
             | Self::Set { input, .. }
             | Self::Check { input } => Some(input),
-            Self::Recover { .. } => None,
+            Self::Recover { .. } | Self::Build { .. } => None,
         }
     }
 }
@@ -90,19 +107,19 @@ pub struct Input {
     /// Server JSON file or config directory.
     #[arg(long)]
     pub server: PathBuf,
-    /// Local directory of independent client JSON configs (non-recursive; no deployment).
+    /// Local directory of client JSON configs; repeatable (non-recursive; no deployment).
     #[arg(
         long,
         visible_alias = "client-config-dir",
         required_unless_present = "client"
     )]
-    pub clients: Option<PathBuf>,
-    /// Include/select a client file; repeatable. Shared identities still rotate together.
+    pub clients: Vec<PathBuf>,
+    /// Include/select a client file; repeatable. A shared user credential still rotates everywhere.
     #[arg(long = "client")]
     pub client: Vec<PathBuf>,
     #[arg(long)]
     pub inbound_tag: Vec<String>,
-    /// Select outbound tags; shared user credentials still rotate together.
+    /// Select outbound tags; a shared user credential still rotates everywhere.
     #[arg(
         long = "outbound-tag",
         visible_alias = "client-tag",
@@ -116,49 +133,9 @@ pub struct Input {
 
 #[derive(Args)]
 pub struct RotationSelection {
-    /// Rotate all supported material already configured with bound outbounds for this type.
-    #[arg(
-        long = "type",
-        value_enum,
-        value_name = "TYPE",
-        required_unless_present = "kind",
-        conflicts_with = "kind"
-    )]
+    /// Limit to one type; by default every supported type with selected bound outbounds.
+    #[arg(long = "type", value_enum, value_name = "TYPE")]
     pub protocol: Option<Protocol>,
-    /// Rotate only this material (requires --type). UUID/password/short-ID allow outbound selection.
-    #[arg(
-        long,
-        value_enum,
-        value_name = "MATERIAL",
-        requires = "protocol",
-        conflicts_with = "kind"
-    )]
-    pub only: Option<RotationMaterial>,
-    /// Legacy single-operation interface; cannot be combined with --type/--only.
-    #[arg(long, value_enum, required_unless_present = "protocol")]
-    pub kind: Option<RotationKind>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum RotationMaterial {
-    Uuid,
-    Password,
-    RealityShortId,
-    RealityKeypair,
-    ObfsPassword,
-}
-
-impl RotationMaterial {
-    pub fn kind(self, protocol: Protocol) -> Option<RotationKind> {
-        match (protocol, self) {
-            (Protocol::Vless, Self::Uuid) => Some(RotationKind::VlessUuid),
-            (Protocol::Vless, Self::RealityShortId) => Some(RotationKind::VlessRealityShortId),
-            (Protocol::Vless, Self::RealityKeypair) => Some(RotationKind::VlessRealityKeypair),
-            (Protocol::Hysteria2, Self::Password) => Some(RotationKind::Hysteria2Password),
-            (Protocol::Hysteria2, Self::ObfsPassword) => Some(RotationKind::Hysteria2ObfsPassword),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -168,6 +145,8 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    pub const ALL: [Self; 2] = [Self::Vless, Self::Hysteria2];
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "vless" => Some(Self::Vless),
@@ -192,52 +171,9 @@ impl Protocol {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum RotationKind {
-    VlessUuid,
-    VlessRealityShortId,
-    VlessRealityKeypair,
-    Hysteria2Password,
-    Hysteria2ObfsPassword,
-}
-
-impl RotationKind {
-    pub fn identity(self) -> Option<IdentityKind> {
-        match self {
-            Self::VlessUuid => Some(IdentityKind::VlessUuid),
-            Self::Hysteria2Password => Some(IdentityKind::Hysteria2Password),
-            _ => None,
-        }
-    }
-}
-
-impl From<IdentityKind> for RotationKind {
-    fn from(kind: IdentityKind) -> Self {
-        match kind {
-            IdentityKind::VlessUuid => Self::VlessUuid,
-            IdentityKind::Hysteria2Password => Self::Hysteria2Password,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum PropertyKind {
     Server,
     ServerPort,
     ServerPorts,
     TlsServerName,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum IdentityKind {
-    VlessUuid,
-    Hysteria2Password,
-}
-
-impl IdentityKind {
-    pub fn protocol(self) -> Protocol {
-        match self {
-            Self::VlessUuid => Protocol::Vless,
-            Self::Hysteria2Password => Protocol::Hysteria2,
-        }
-    }
 }

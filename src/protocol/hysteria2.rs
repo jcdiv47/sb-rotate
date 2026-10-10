@@ -1,31 +1,13 @@
 use anyhow::{Result, ensure};
 
 use crate::{
-    binding::{Inventory, ServiceBinding},
-    cli::{Input, Protocol, RotationKind},
+    binding::ServiceBinding,
     config::ConfigSet,
     plan::{OperationKind, RotationPlan},
     singbox::SingBox,
 };
 
-use super::{one_service, service_plan, string_field};
-
-pub fn obfs_password(
-    configs: &ConfigSet,
-    inventory: &Inventory,
-    input: &Input,
-    singbox: &impl SingBox,
-) -> Result<RotationPlan> {
-    let service = one_service(
-        configs,
-        inventory,
-        input,
-        Some(Protocol::Hysteria2),
-        false,
-        |_| true,
-    )?;
-    obfs_password_for_service(configs, service, singbox)
-}
+use super::{service_plan, string_field, warn_unsupplied_users};
 
 pub(crate) fn obfs_password_for_service(
     configs: &ConfigSet,
@@ -55,10 +37,8 @@ pub(crate) fn obfs_password_for_service(
         !old.contains(&replacement.as_str()),
         "generated obfs password is unchanged; retry"
     );
-    let mut plan = service_plan(
-        service,
-        OperationKind::Rotate(RotationKind::Hysteria2ObfsPassword),
-    );
+    let mut plan = service_plan(service, OperationKind::Rotate);
+    warn_unsupplied_users(&mut plan, service, "obfs password");
     for endpoint in std::iter::once(&service.inbound).chain(service.clients()) {
         plan.edit(
             configs,

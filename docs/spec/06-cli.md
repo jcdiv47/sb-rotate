@@ -14,6 +14,7 @@ plan      calculate and display edits without writing
 rotate    generate and apply a supported replacement
 set       propagate an explicitly supplied service property
 check     validate supplied config sets using sing-box
+build     merge client fragments into one validated config per target
 recover   restore an interrupted transaction or clean completed transaction metadata
 ```
 
@@ -21,7 +22,7 @@ recover   restore an interrupted transaction or clean completed transaction meta
 
 ```text
 --server <PATH>          server JSON file or server config directory
---clients <DIR>          local directory of independent client JSON configs
+--clients <DIR>          local directory of client JSON configs; repeatable
 --client <PATH>          include/select a specific client file; repeatable
 --inbound-tag <TAG>      select server inbound tag; repeatable
 --outbound-tag <TAG>     select client outbound tag; repeatable (--client-tag alias)
@@ -30,7 +31,7 @@ recover   restore an interrupted transaction or clean completed transaction meta
 
 At least one client source is required for commands that synchronize server/client state.
 
-`--clients` (alias `--client-config-dir`) discovers direct `.json` files in the directory. Recursive discovery is not required in v1. Each file may contain multiple outbounds of the same or different types. Files are local: the tool does not contact devices, deploy configs, or reload services.
+`--clients` (alias `--client-config-dir`) discovers direct `.json` files in the directory; repeat it to combine directories, for example client configs assembled from shared and per-device fragments. Recursive discovery is not required in v1. Each file may contain multiple outbounds of the same or different types. Files are local: the tool does not contact devices, deploy configs, or reload services.
 
 ## Selector semantics
 
@@ -50,46 +51,53 @@ Across categories, selectors are ANDed:
 
 means the `home` outbound(s) inside `phone.json`.
 
-## Type-driven rotation
+## Rotation
 
-Preferred syntax for both `plan` and `rotate`:
+Syntax for both `plan` and `rotate`:
 
 ```bash
-sb-rotate plan --server ./server.json --clients ./clients/ --type vless
+sb-rotate plan --server <PATH> <client options> [--type <TYPE>] [selectors]
+sb-rotate rotate --server <PATH> <client options> [--type <TYPE>] [selectors]
+```
+
+Examples:
+
+```bash
+# Every supported type.
+sb-rotate rotate --server ./server.json --clients ./clients/
+
+# One type.
 sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
 sb-rotate rotate --server ./server.json --clients ./clients/ --type hysteria2
 
-# Limit material and optionally select through an outbound.
+# One client's credentials only.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --type vless --only uuid --outbound-tag home
+  --client ./clients/phone.json --outbound-tag home
 
-# Limit to one inbound, including its shared secrets.
+# One inbound, including its shared secrets.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --type vless --inbound-tag vless-home
+  --inbound-tag vless-home
 ```
 
-`--type` uses sing-box type names, currently `vless` and `hysteria2`. Reality is a TLS option on VLESS, not a separate type.
+`--type` uses sing-box type names, currently `vless` and `hysteria2`; without it every supported type with selected bound outbounds is rotated. Reality is a TLS option on VLESS, not a separate type.
 
-Without `--only`, all supported, already-configured material with bound outbounds is rotated:
+A rotation replaces the supported, already-configured secrets of the selected outbounds, on the server and on the clients. Individual materials cannot be rotated on their own:
 
-| Type | Default material | Allowed `--only` values |
-|---|---|---|
-| `vless` | UUIDs, enabled Reality keypairs and short IDs | `uuid`, `reality-keypair`, `reality-short-id` |
-| `hysteria2` | User passwords, configured obfs passwords | `password`, `obfs-password` |
+| Type | Material |
+|---|---|
+| `vless` | user UUIDs, enabled Reality keypairs and short IDs |
+| `hysteria2` | user passwords, configured obfs passwords |
 
 Rules:
 
-- Each outbound is matched independently to its inbound/user by the existing discovery rules, not merely by type or tag. Ambiguous matches fail.
-- Every matching inbound is eligible, even for keypair/obfs/short-ID rotation. `--inbound-tag` optionally narrows this set.
+- Each outbound is matched independently to its inbound/user by the existing discovery rules, not merely by type or tag. Ambiguous matches fail before any value is generated.
+- Without selectors, every bound outbound is selected. `--client`, `--outbound-tag`, and `--inbound-tag` narrow the selection. An inbound is fully selected when all of its bound outbounds are selected; `--inbound-tag` alone fully selects its inbounds.
+- A selected outbound's user credential receives one replacement across all discovered occurrences, including unselected outbounds sharing it.
+- A fully selected inbound's Reality keypair or obfs password is generated once and written to the server and every bound client. For a partially selected inbound it is kept, and the plan says so; this lets one client's credentials rotate without touching other clients. The plan warns when a shared secret change also affects server users that have no supplied client.
+- Short IDs are generated per selected Reality outbound. IDs still used by unselected supplied clients and unattributed accepted IDs are retained.
 - All edits are composed from the original inventory, then validated/applied once using one recoverable transaction. Replacements remain atomic per file, not across files.
-- Shared user credentials receive one replacement across all discovered occurrences. Shared keypairs/obfs passwords are generated once per inbound. Short IDs are generated per selected Reality outbound.
-- An all-material rotation rejects `--client` and `--outbound-tag`, even if optional secrets are absent. Whole-inbound `--only reality-keypair` / `--only obfs-password` also reject these selectors. Use `--clients` for the full inventory.
-- `--only uuid`, `--only password`, and `--only reality-short-id` allow client/outbound selection. Selecting a user still updates every discovered occurrence of that user's credential.
-- Absent/disabled optional features are not enabled. TLS certificates, addresses, and ports are not rotated. Unmatched users/outbounds and unattributed accepted short IDs are retained. Clients not supplied cannot be updated.
-- Explicitly selected material with no eligible bindings fails rather than silently succeeding. A material unsupported by the selected type fails before generation.
-- `--only` requires `--type`. Neither can be combined with legacy `--kind`.
-
-The `--kind` examples below remain supported for compatibility; unlike type-driven rotation, their service-scoped operations still require a single matching inbound.
+- Absent/disabled optional features are not enabled. TLS certificates, addresses, and ports are not rotated. Unmatched users/outbounds are retained. Clients not supplied cannot be updated.
+- A selection with no bound outbounds fails rather than silently succeeding.
 
 ## `inspect`
 
@@ -127,87 +135,11 @@ Passwords are masked in output. `--protocol` remains an alias for `--type`; `--c
 
 ## `plan`
 
-Use the type-driven syntax above, or the legacy single-operation syntax:
-
-```bash
-sb-rotate plan --server <PATH> <client options> --kind <KIND> [selectors]
-```
-
-Examples:
-
-```bash
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
-
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json
-
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind hysteria2-obfs-password \
-  --inbound-tag hy2-home
-```
-
-`plan` never writes config files.
+Uses the [rotation](#rotation) syntax. `plan` generates fresh values and displays the edits (secrets masked), but never writes config files.
 
 ## `rotate`
 
-Use the type-driven syntax above, or the legacy single-operation syntax:
-
-```bash
-sb-rotate rotate --server <PATH> <client options> --kind <KIND> [selectors]
-```
-
-Supported initial kinds:
-
-```text
-vless-uuid
-vless-reality-short-id
-vless-reality-keypair
-hysteria2-password
-hysteria2-obfs-password
-```
-
-Examples:
-
-```bash
-# All matched VLESS identities.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
-
-# Identity selected through one client. If that UUID is shared,
-# every occurrence in the identity binding rotates together.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --client ./clients/phone.json
-
-# One specific outbound in a multi-outbound client config.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json \
-  --client-tag home
-
-# Several selected client outbounds receive independent short IDs.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json \
-  --client ./clients/laptop.json \
-  --client-tag home
-
-# Whole-service Reality keypair.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-keypair \
-  --inbound-tag vless-home
-
-# Hysteria2 identities.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password
-
-# Shared Hysteria2 obfs secret.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-obfs-password \
-  --inbound-tag hy2-home
-```
+Uses the [rotation](#rotation) syntax. `rotate` generates a new plan, validates the staged server set and changed clients, then replaces the originals.
 
 ## `set`
 
@@ -251,7 +183,7 @@ sb-rotate set --server ./server.json --clients ./clients/ \
   --value 20000:30000,40000
 ```
 
-Service-level `set` operations apply to all bound clients in the selected service. Client selectors are rejected for service-wide properties in v1 rather than allowing a service to drift accidentally. Supply the client inventory with `--clients`, not `--client`. The same restriction applies to Reality keypair and Hysteria2 obfs rotation.
+Service-level `set` operations apply to all bound clients in the selected service. Client selectors are rejected for service-wide properties in v1 rather than allowing a service to drift accidentally. Supply the client inventory with `--clients`, not `--client`.
 
 `set --dry-run` displays the same property edit plan without writing or validating temporary configs. Setting a property to its existing value is a no-op; unchanged files are not rewritten.
 
@@ -276,6 +208,36 @@ sb-rotate check --server ./server-config/ --clients ./clients/
 sb-rotate check --server ./server.json --client ./phone.json \
   --sing-box /opt/sing-box/bin/sing-box
 ```
+
+## `build`
+
+```bash
+sb-rotate build --manifest <PATH> [TARGET...] [--publish [--sudo]] [--sing-box <PATH>]
+```
+
+The JSON manifest lists targets and their fragments; relative paths resolve from the manifest's directory:
+
+```json
+{
+  "output_dir": "out",
+  "publish_dir": "/srv/singbox-sub",
+  "targets": {
+    "phone": {"fragments": ["devices/phone.json", "shared/base.json"], "publish_as": "phone-<random>.json"}
+  }
+}
+```
+
+`output_dir` defaults to `out`; `publish_dir` and `publish_as` are required only with `--publish`. Unknown fields, unsafe target/publish names, missing fragments, and unknown selected targets are rejected.
+
+Rules:
+
+- A scalar set by more than one fragment of a target is rejected, so merge order only affects arrays.
+- Fragments are staged under index-prefixed names in a private directory and merged with `sing-box merge`, which orders inputs by path; manifest order therefore becomes array (rule) order.
+- Every selected target is merged and validated with `sing-box check` before any output is written.
+- Outputs (`<output_dir>/<target>.json`) are replaced atomically; on Unix they are 0600 and a new output directory is 0700.
+- `--publish` writes each output to `<publish_dir>/<publish_as>`: atomically with mode 0644 when the directory is writable. Otherwise it writes nothing there, because existing ownership may be deliberate. It reports `sudo install -o root -g root -m 644 <output> <target>` commands and exits non-zero after writing all outputs.
+- `--publish --sudo` never writes published files directly: after every target has been merged, validated, and written to `output_dir`, it runs that `sudo install` for each one (sudo may prompt), producing root-owned subscription files.
+- A pending rotation transaction in any fragment directory blocks the build.
 
 ## `recover`
 

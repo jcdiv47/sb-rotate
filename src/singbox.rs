@@ -21,6 +21,8 @@ pub trait SingBox {
     fn generate_reality_keypair(&self) -> Result<RealityKeyPair>;
     fn check_file(&self, path: &Path) -> Result<()>;
     fn check_directory(&self, path: &Path) -> Result<()>;
+    /// Merge configs into `output`; sing-box orders the inputs by path.
+    fn merge(&self, output: &Path, inputs: &[PathBuf]) -> Result<()>;
 }
 
 pub struct Executable {
@@ -124,6 +126,16 @@ impl SingBox for Executable {
             true,
         )
         .with_context(|| format!("validating server config directory {}", path.display()))?;
+        Ok(())
+    }
+
+    fn merge(&self, output: &Path, inputs: &[PathBuf]) -> Result<()> {
+        let mut args = vec![OsStr::new("merge"), output.as_os_str()];
+        for input in inputs {
+            args.extend([OsStr::new("-c"), input.as_os_str()]);
+        }
+        self.run(&args, true)
+            .with_context(|| format!("merging config fragments into {}", output.display()))?;
         Ok(())
     }
 }

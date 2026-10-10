@@ -39,15 +39,14 @@ vless-office
     phone.json#office
 ```
 
-Rotating the identity selected by `home`:
+Rotating what `home` needs:
 
 ```bash
 sb-rotate rotate --server ./server.json --client ./phone.json \
-  --kind vless-uuid \
-  --client-tag home
+  --type vless --outbound-tag home
 ```
 
-also updates `backup`, because both outbounds share the same identity binding.
+also updates the UUID in `backup`, because both outbounds share the same identity binding. If `vless-home` uses Reality, only `home` receives a new short ID. The keypair rotates only when every bound outbound of `vless-home` is selected.
 
 ```text
 before
@@ -69,6 +68,5 @@ To target the office service instead:
 
 ```bash
 sb-rotate rotate --server ./server.json --client ./phone.json \
-  --kind vless-uuid \
-  --client-tag office
+  --type vless --outbound-tag office
 ```

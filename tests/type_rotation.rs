@@ -3,7 +3,7 @@ use std::{cell::Cell, fs, path::Path};
 use anyhow::{Result, bail};
 use sb_rotate::{
     apply, binding,
-    cli::{Input, Protocol, RotationMaterial},
+    cli::{Input, Protocol},
     config::ConfigSet,
     plan::{self, RotationPlan},
     singbox::{RealityKeyPair, SingBox},
@@ -59,6 +59,9 @@ impl SingBox for Generator {
     fn check_directory(&self, path: &Path) -> Result<()> {
         self.check_file(path)
     }
+    fn merge(&self, _: &Path, _: &[std::path::PathBuf]) -> Result<()> {
+        unreachable!("rotation never merges configs")
+    }
 }
 
 struct Fixture {
@@ -71,7 +74,7 @@ impl Fixture {
         fs::create_dir(root.path().join("clients")).unwrap();
         let input = Input {
             server: root.path().join("server.json"),
-            clients: Some(root.path().join("clients")),
+            clients: vec![root.path().join("clients")],
             ..Input::default()
         };
         let fixture = Self { root, input };
@@ -116,13 +119,12 @@ impl Fixture {
     }
     fn plan(
         &self,
-        protocol: Protocol,
-        only: Option<RotationMaterial>,
+        protocol: Option<Protocol>,
         sb: &Generator,
     ) -> Result<(ConfigSet, RotationPlan)> {
         let configs = ConfigSet::load(&self.input)?;
         let inventory = binding::discover(&configs, &self.input)?;
-        let plan = plan::rotation_by_type(&configs, &inventory, &self.input, protocol, only, sb)?;
+        let plan = plan::rotation(&configs, &inventory, &self.input, protocol, sb)?;
         Ok((configs, plan))
     }
 }
@@ -134,7 +136,7 @@ fn type_rotation_composes_multiple_inbounds_and_shared_outbounds_in_one_apply() 
         let sb = Generator::default();
         let before_server = fixture.get("server.json");
         let before_client = fixture.get("clients/all.json");
-        let (configs, plan) = fixture.plan(protocol, None, &sb).unwrap();
+        let (configs, plan) = fixture.plan(Some(protocol), &sb).unwrap();
         assert_eq!(fixture.get("server.json"), before_server);
         assert_eq!(fixture.get("clients/all.json"), before_client);
         assert_eq!(sb.checks.get(), 0);
@@ -200,67 +202,80 @@ fn type_rotation_composes_multiple_inbounds_and_shared_outbounds_in_one_apply() 
 }
 
 #[test]
-fn targeted_material_supports_multiple_inbounds_and_preserves_other_material() {
-    for (protocol, only, suffix) in [
-        (Protocol::Vless, RotationMaterial::Uuid, "/uuid"),
-        (Protocol::Vless, RotationMaterial::RealityKeypair, "_key"),
-        (
-            Protocol::Vless,
-            RotationMaterial::RealityShortId,
-            "/short_id",
-        ),
-        (Protocol::Hysteria2, RotationMaterial::Password, "/password"),
-        (
-            Protocol::Hysteria2,
-            RotationMaterial::ObfsPassword,
-            "/obfs/password",
-        ),
+fn untyped_rotation_covers_every_supported_type_in_one_plan() {
+    let fixture = Fixture::new();
+    let (configs, plan) = fixture.plan(None, &Generator::default()).unwrap();
+    for suffix in [
+        "/uuid",
+        "/private_key",
+        "/public_key",
+        "/short_id",
+        "/password",
+        "/obfs/password",
     ] {
-        let fixture = Fixture::new();
-        let (configs, plan) = fixture
-            .plan(protocol, Some(only), &Generator::default())
-            .unwrap();
         assert!(
             plan.edits
                 .iter()
-                .all(|edit| edit.target.pointer.ends_with(suffix))
+                .any(|edit| edit.target.pointer.ends_with(suffix)),
+            "missing {suffix}"
         );
-        assert!(
-            plan.edits
-                .iter()
-                .any(|edit| edit.target.pointer.starts_with("/inbounds/"))
-        );
-        plan.materialize(&configs).unwrap();
     }
+    for inbound in 0..4 {
+        let prefix = format!("/inbounds/{inbound}/");
+        assert!(
+            plan.edits
+                .iter()
+                .any(|edit| edit.target.pointer.starts_with(&prefix))
+        );
+    }
+    plan.materialize(&configs).unwrap();
 }
 
 #[test]
-fn outbound_selection_expands_shared_users_but_not_other_users() {
+fn outbound_selection_rotates_only_per_client_material() {
+    for protocol in [None, Some(Protocol::Vless)] {
+        let mut fixture = Fixture::new();
+        fixture.input.client_tag = vec!["vless-0".into()];
+        let (configs, plan) = fixture.plan(protocol, &Generator::default()).unwrap();
+        let count = |suffix: &str| {
+            plan.edits
+                .iter()
+                .filter(|edit| edit.target.pointer.ends_with(suffix))
+                .count()
+        };
+        // The shared user rotates on both outbounds; only the selected outbound
+        // gets a new short ID; the keypair is shared with copy-vless-0.
+        assert_eq!(count("/uuid"), 3);
+        assert_eq!(count("_key"), 0);
+        assert_eq!(count("/short_id"), 2);
+        assert!(plan.edits.iter().all(|edit| {
+            edit.target.pointer.starts_with("/inbounds/0/")
+                || edit.target.pointer.starts_with("/outbounds/0/")
+                || edit.target.pointer.starts_with("/outbounds/1/")
+        }));
+        let changed = plan.materialize(&configs).unwrap();
+        let client = &changed[&fixture.root.path().join("clients/all.json")];
+        assert_eq!(
+            client["outbounds"][0]["uuid"],
+            client["outbounds"][1]["uuid"]
+        );
+        assert_eq!(
+            client["outbounds"][1]["tls"]["reality"]["short_id"],
+            "aaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(client["outbounds"][2]["uuid"], "vless-1");
+    }
+    // Selecting both outbounds of the inbound includes its shared keypair.
     let mut fixture = Fixture::new();
-    fixture.input.client_tag = vec!["vless-0".into()];
-    let (configs, plan) = fixture
-        .plan(
-            Protocol::Vless,
-            Some(RotationMaterial::Uuid),
-            &Generator::default(),
-        )
-        .unwrap();
-    assert_eq!(plan.edits.len(), 3);
-    let changed = plan.materialize(&configs).unwrap();
-    let client = &changed[&fixture.root.path().join("clients/all.json")];
+    fixture.input.client_tag = vec!["vless-0".into(), "copy-vless-0".into()];
+    let (_, plan) = fixture.plan(None, &Generator::default()).unwrap();
     assert_eq!(
-        client["outbounds"][0]["uuid"],
-        client["outbounds"][1]["uuid"]
+        plan.edits
+            .iter()
+            .filter(|edit| edit.target.pointer.ends_with("_key"))
+            .count(),
+        3
     );
-    assert_eq!(client["outbounds"][2]["uuid"], "vless-1");
-    let (_, plan) = fixture
-        .plan(
-            Protocol::Vless,
-            Some(RotationMaterial::RealityShortId),
-            &Generator::default(),
-        )
-        .unwrap();
-    assert_eq!(plan.edits.len(), 2);
 }
 
 #[test]
@@ -268,50 +283,13 @@ fn inbound_selection_limits_all_material_rotation() {
     let mut fixture = Fixture::new();
     fixture.input.inbound_tag = vec!["vless-1".into()];
     let (_, plan) = fixture
-        .plan(Protocol::Vless, None, &Generator::default())
+        .plan(Some(Protocol::Vless), &Generator::default())
         .unwrap();
     assert!(plan.edits.iter().all(|edit| {
         edit.target.pointer.starts_with("/inbounds/1/")
             || edit.target.pointer.starts_with("/outbounds/2/")
             || edit.target.pointer.starts_with("/outbounds/3/")
     }));
-}
-
-#[test]
-fn invalid_material_and_unsafe_selectors_fail_before_generation() {
-    let mut fixture = Fixture::new();
-    let sb = Generator::default();
-    assert!(
-        fixture
-            .plan(Protocol::Vless, Some(RotationMaterial::Password), &sb)
-            .is_err()
-    );
-    assert!(
-        fixture
-            .plan(Protocol::Hysteria2, Some(RotationMaterial::Uuid), &sb)
-            .is_err()
-    );
-    for use_path in [false, true] {
-        fixture.input.client_tag.clear();
-        fixture.input.client.clear();
-        if use_path {
-            fixture
-                .input
-                .client
-                .push(fixture.root.path().join("clients/all.json"));
-        } else {
-            fixture.input.client_tag.push("vless-0".into());
-        }
-        for (protocol, only) in [
-            (Protocol::Vless, None),
-            (Protocol::Hysteria2, None),
-            (Protocol::Vless, Some(RotationMaterial::RealityKeypair)),
-            (Protocol::Hysteria2, Some(RotationMaterial::ObfsPassword)),
-        ] {
-            assert!(fixture.plan(protocol, only, &sb).is_err());
-        }
-    }
-    assert_eq!(sb.calls.get(), 0);
 }
 
 #[test]
@@ -330,7 +308,7 @@ fn optional_material_is_not_enabled_and_explicit_empty_selection_fails() {
     fixture.put("server.json", server);
     fixture.put("clients/all.json", client);
     for protocol in [Protocol::Vless, Protocol::Hysteria2] {
-        let (_, plan) = fixture.plan(protocol, None, &Generator::default()).unwrap();
+        let (_, plan) = fixture.plan(Some(protocol), &Generator::default()).unwrap();
         assert_eq!(plan.edits.len(), 6);
         assert!(
             plan.edits
@@ -339,17 +317,14 @@ fn optional_material_is_not_enabled_and_explicit_empty_selection_fails() {
                     && !edit.target.pointer.contains("obfs"))
         );
     }
-    for (protocol, only) in [
-        (Protocol::Vless, RotationMaterial::RealityKeypair),
-        (Protocol::Vless, RotationMaterial::RealityShortId),
-        (Protocol::Hysteria2, RotationMaterial::ObfsPassword),
-    ] {
-        assert!(
-            fixture
-                .plan(protocol, Some(only), &Generator::default())
-                .is_err()
-        );
+    let mut fixture = fixture;
+    fixture.input.client_tag = vec!["no-such-outbound".into()];
+    let sb = Generator::default();
+    for protocol in [None, Some(Protocol::Vless), Some(Protocol::Hysteria2)] {
+        let error = fixture.plan(protocol, &sb).err().unwrap();
+        assert!(error.to_string().contains("no configured material"));
     }
+    assert_eq!(sb.calls.get(), 0);
 }
 
 #[test]
@@ -359,9 +334,9 @@ fn combined_generation_or_validation_failure_never_writes_partial_rotation() {
     let originals = ["server.json", "clients/all.json"]
         .map(|name| fs::read(fixture.root.path().join(name)).unwrap());
     sb.fail_keys.set(true);
-    assert!(fixture.plan(Protocol::Vless, None, &sb).is_err());
+    assert!(fixture.plan(Some(Protocol::Vless), &sb).is_err());
     sb.fail_keys.set(false);
-    let (configs, plan) = fixture.plan(Protocol::Vless, None, &sb).unwrap();
+    let (configs, plan) = fixture.plan(Some(Protocol::Vless), &sb).unwrap();
     sb.fail_check.set(true);
     assert!(apply::apply(&configs, &plan, &sb).is_err());
     for (name, original) in ["server.json", "clients/all.json"]
@@ -379,7 +354,7 @@ fn ambiguous_inbounds_are_not_silently_split_by_batching() {
     server["inbounds"][1]["users"] = server["inbounds"][0]["users"].clone();
     fixture.put("server.json", server);
     let sb = Generator::default();
-    let error = fixture.plan(Protocol::Vless, None, &sb).err().unwrap();
+    let error = fixture.plan(None, &sb).err().unwrap();
     assert!(error.to_string().contains("ambiguous"));
     assert_eq!(sb.calls.get(), 0);
 }

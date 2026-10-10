@@ -16,13 +16,13 @@ phone  -> password-a
 laptop -> password-b
 ```
 
-## Rotate user authentication
+## Rotate
 
-Rotate all matched Hysteria2 identities:
+Rotate all matched Hysteria2 identities and the shared obfs password:
 
 ```bash
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password
+  --type hysteria2
 ```
 
 The tool generates one new password per identity binding.
@@ -37,31 +37,23 @@ bob server password   -> new-b
 laptop password       -> new-b
 ```
 
-Rotate only the identity used by the phone:
-
-```bash
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password \
-  --client ./clients/phone.json
-```
-
-If another supplied client shares the same old password, it rotates with the phone because the password defines one identity binding.
-
-## Rotate shared obfuscation password
-
-```bash
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-obfs-password \
-  --inbound-tag hy2-home
-```
-
-One new obfs password is generated and written to:
+One new obfs password is also generated for `hy2-home` and written to:
 
 ```text
 server hy2-home obfs.password
 phone obfs.password
 laptop obfs.password
 ```
+
+Rotate only the phone's credentials:
+
+```bash
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --type hysteria2 \
+  --client ./clients/phone.json
+```
+
+This rotates alice's password, plus any other supplied client sharing it, because the password defines one identity binding. The shared obfs password is kept because the laptop is not selected, so the laptop is not touched at all.
 
 ## Move clients to another host
 

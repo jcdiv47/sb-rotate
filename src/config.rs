@@ -28,7 +28,7 @@ pub struct ConfigSet {
     pub server_layout: BTreeMap<OsString, PathBuf>,
     pub client_files: BTreeSet<PathBuf>,
     pub selected_clients: BTreeSet<PathBuf>,
-    client_layout: Option<(PathBuf, BTreeMap<OsString, PathBuf>)>,
+    client_layouts: BTreeMap<PathBuf, BTreeMap<OsString, PathBuf>>,
     source_paths: BTreeMap<PathBuf, PathBuf>,
 }
 
@@ -70,19 +70,16 @@ impl ConfigSet {
             .iter()
             .map(|p| resolve(p))
             .collect::<Result<_>>()?;
-        let client_layout = input
-            .clients
-            .as_ref()
-            .map(|path| -> Result<_> {
-                let directory = resolve(path)?;
-                let layout = json_layout(&directory)?;
-                Ok((directory, layout))
-            })
-            .transpose()?;
-        let mut client_files = client_layout
-            .as_ref()
-            .map(|(_, layout)| layout.values().cloned().collect())
-            .unwrap_or_else(BTreeSet::new);
+        let mut client_layouts = BTreeMap::new();
+        for path in &input.clients {
+            let directory = resolve(path)?;
+            let layout = json_layout(&directory)?;
+            client_layouts.insert(directory, layout);
+        }
+        let mut client_files: BTreeSet<_> = client_layouts
+            .values()
+            .flat_map(|layout| layout.values().cloned())
+            .collect();
         client_files.extend(selected_clients.iter().cloned());
         ensure!(!client_files.is_empty(), "no client JSON files supplied");
         ensure!(
@@ -123,7 +120,7 @@ impl ConfigSet {
             server_layout,
             client_files,
             selected_clients,
-            client_layout,
+            client_layouts,
             source_paths,
         })
     }
@@ -137,9 +134,7 @@ impl ConfigSet {
         if self.server_is_directory {
             layouts.push((self.server.clone(), self.server_layout.clone()));
         }
-        if let Some(layout) = &self.client_layout {
-            layouts.push(layout.clone());
-        }
+        layouts.extend(self.client_layouts.clone());
         layouts
     }
 
@@ -152,9 +147,7 @@ impl ConfigSet {
         if self.server_is_directory {
             directories.insert(self.server.clone());
         }
-        if let Some((directory, _)) = &self.client_layout {
-            directories.insert(directory.clone());
-        }
+        directories.extend(self.client_layouts.keys().cloned());
         // Also protect explicit file aliases, not just their resolved targets.
         // Directory inputs lock the directory itself, not its (possibly unwritable) parent.
         for (source, resolved) in &self.source_paths {
@@ -181,7 +174,7 @@ impl ConfigSet {
                 "server directory changed while planning; refusing to commit"
             );
         }
-        if let Some((directory, layout)) = &self.client_layout {
+        for (directory, layout) in &self.client_layouts {
             ensure!(
                 json_layout(directory)? == *layout,
                 "client directory changed while planning; refusing to commit"

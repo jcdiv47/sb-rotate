@@ -16,7 +16,7 @@ fn setup(root: &Path) -> (ConfigSet, BTreeMap<PathBuf, TempPath>) {
     fs::write(root.join("clients/b.json"), b"{\"secret\":\"old-b\"}\n").unwrap();
     let configs = ConfigSet::load(&Input {
         server: root.join("a.json"),
-        clients: Some(root.join("clients")),
+        clients: vec![root.join("clients")],
         ..Input::default()
     })
     .unwrap();

@@ -135,7 +135,7 @@ The generated public key goes to every bound VLESS client with Reality enabled:
 client outbound.tls.reality.public_key
 ```
 
-This operation is not client-selectable. A Reality keypair is treated as a service-level property.
+A Reality keypair is a service-level property: it rotates only when every bound outbound of the inbound is selected, and then every bound Reality client receives the new public key.
 
 ## `server`
 
