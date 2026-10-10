@@ -48,6 +48,9 @@ impl SingBox for Validator {
     fn check_directory(&self, path: &Path) -> Result<()> {
         self.check_file(path)
     }
+    fn merge(&self, _: &Path, _: &[std::path::PathBuf]) -> Result<()> {
+        unreachable!("rotation never merges configs")
+    }
 }
 
 struct Fixture {
@@ -60,7 +63,7 @@ impl Fixture {
         fs::create_dir(root.path().join("clients")).unwrap();
         let input = Input {
             server: root.path().join("server.json"),
-            clients: Some(root.path().join("clients")),
+            clients: vec![root.path().join("clients")],
             ..Input::default()
         };
         let fixture = Self { root, input };
@@ -236,7 +239,7 @@ fn symlinked_client_directory_and_file_aliases_use_canonical_writer_locks() {
     let actual = fixture.path("clients");
     let alias = fixture.path("client-alias");
     symlink(&actual, &alias).unwrap();
-    fixture.input.clients = Some(alias);
+    fixture.input.clients = vec![alias];
     let (configs, plan) = fixture.plan("new.example");
     let held = fs::File::create(actual.join(".sb-rotate.lock")).unwrap();
     held.try_lock().unwrap();

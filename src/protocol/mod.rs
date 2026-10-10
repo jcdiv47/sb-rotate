@@ -7,27 +7,22 @@ use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
 use crate::{
-    binding::{EndpointRef, Inventory, ServiceBinding, client_selected},
+    binding::{EndpointRef, Inventory, ServiceBinding},
     cli::{Input, Protocol},
     config::ConfigSet,
     plan::{OperationKind, RotationPlan},
 };
 
 pub(crate) fn one_service<'a>(
-    configs: &ConfigSet,
     inventory: &'a Inventory,
     input: &Input,
     protocol: Option<Protocol>,
-    client_selectable: bool,
-    eligible: impl Fn(&ServiceBinding) -> bool,
 ) -> Result<&'a ServiceBinding> {
-    if !client_selectable {
-        ensure!(
-            input.client.is_empty() && input.client_tag.is_empty(),
-            "service-wide operations reject --client and --outbound-tag (--client-tag); supply all client configs with --clients and select the inbound with --inbound-tag"
-        );
-    }
-    for candidate in [Protocol::Vless, Protocol::Hysteria2] {
+    ensure!(
+        input.client.is_empty() && input.client_tag.is_empty(),
+        "service-wide operations reject --client and --outbound-tag (--client-tag); supply all client configs with --clients and select the inbound with --inbound-tag"
+    );
+    for candidate in Protocol::ALL {
         if protocol.is_none_or(|protocol| protocol == candidate) {
             inventory.ensure_unambiguous(candidate)?;
         }
@@ -37,10 +32,7 @@ pub(crate) fn one_service<'a>(
         .iter()
         .filter(|service| {
             protocol.is_none_or(|protocol| service.protocol == protocol)
-                && eligible(service)
-                && service
-                    .clients()
-                    .any(|client| !client_selectable || client_selected(client, configs, input))
+                && service.clients().next().is_some()
         })
         .collect();
     ensure!(
@@ -63,6 +55,32 @@ pub(crate) fn service_plan(service: &ServiceBinding, operation: OperationKind) -
         service.clients().count()
     ));
     plan
+}
+
+/// Service-wide changes also reach server users whose client configs were not supplied.
+pub(crate) fn warn_unsupplied_users(
+    plan: &mut RotationPlan,
+    service: &ServiceBinding,
+    change: &str,
+) {
+    let unsupplied: Vec<_> = service
+        .identities
+        .iter()
+        .filter(|identity| identity.clients.is_empty())
+        .collect();
+    if unsupplied.is_empty() {
+        return;
+    }
+    let names: Vec<_> = unsupplied
+        .iter()
+        .flat_map(|identity| &identity.user_names)
+        .map(String::as_str)
+        .collect();
+    plan.contexts.push(format!(
+        "  warning: {} server user(s) [{}] have no supplied client config; update their clients' {change} separately",
+        unsupplied.len(),
+        names.join(", ")
+    ));
 }
 
 pub(crate) fn endpoint_value<'a>(

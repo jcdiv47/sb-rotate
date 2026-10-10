@@ -60,23 +60,13 @@ The outbound tag is metadata and a selector. It is not assumed to be globally un
 ```rust
 struct IdentityBinding {
     protocol: Protocol,
-    kind: IdentityKind,
     value: SecretValue,
     server_refs: Vec<ConfigRef>,
     client_refs: Vec<ConfigRef>,
 }
 ```
 
-`server_refs` is plural because malformed or intentionally duplicated server entries can contain the same credential more than once. The rotation unit is the complete equality group.
-
-Initial identity kinds:
-
-```rust
-enum IdentityKind {
-    VlessUuid,
-    Hysteria2Password,
-}
-```
+`server_refs` is plural because malformed or intentionally duplicated server entries can contain the same credential more than once. The rotation unit is the complete equality group. The credential is the protocol's user field: `uuid` for VLESS, `password` for Hysteria2.
 
 ## Operation kind
 
@@ -84,23 +74,16 @@ Operations are explicit rather than expressed through a generic relationship DSL
 
 ```rust
 enum OperationKind {
-    VlessUuid,
-    VlessRealityShortId,
-    VlessRealityKeypair,
-    Hysteria2Password,
-    Hysteria2ObfsPassword,
-    Server,
-    ServerPort,
-    ServerPorts,
-    TlsServerName,
+    Rotate,              // credentials of the selected outbounds (+ shared keys of fully selected inbounds)
+    Set(PropertyKind),   // server, server-port, server-ports, tls-server-name
 }
 ```
 
-Protocol adapters decide whether an operation is valid for a binding.
+Rotation internally composes per-protocol planners (user credential, Reality keypair, Reality short IDs, Hysteria2 obfs password); protocol adapters decide which apply to a binding.
 
 ## Rotation plan
 
-All protocol-specific logic ends at `RotationPlan`. Type-driven rotation composes multiple operation plans into a single `RotateType(Protocol)` plan; edit paths remain disjoint and are checked together before writes.
+All protocol-specific logic ends at `RotationPlan`. Rotation composes multiple operation plans into a single `Rotate` plan; edit paths remain disjoint and are checked together before writes.
 
 ```rust
 struct RotationPlan {

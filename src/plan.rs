@@ -7,8 +7,8 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
 use crate::{
-    binding::{ConfigRef, Inventory, client_selected},
-    cli::{IdentityKind, Input, PropertyKind, Protocol, RotationKind, RotationMaterial},
+    binding::{ConfigRef, Inventory, ServiceBinding, client_selected},
+    cli::{Input, PropertyKind, Protocol},
     config::ConfigSet,
     protocol,
     singbox::SingBox,
@@ -24,8 +24,7 @@ pub struct Edit {
 
 #[derive(Clone, Copy, Debug)]
 pub enum OperationKind {
-    Rotate(RotationKind),
-    RotateType(Protocol),
+    Rotate,
     Set(PropertyKind),
 }
 
@@ -35,154 +34,134 @@ pub struct RotationPlan {
     pub contexts: Vec<String>,
 }
 
+/// Rotate the credentials of the selected bound outbounds: user credentials
+/// (shared occurrences rotate together) and Reality short IDs. An inbound's
+/// shared Reality keypair or Hysteria2 obfs password rotates only when all of
+/// its bound outbounds are selected, so a partial selection never forces other
+/// clients to change. Without a type, every supported type is included.
+/// Rotations compose against one original inventory; the caller
+/// validates/applies the union once.
 pub fn rotation(
     configs: &ConfigSet,
     inventory: &Inventory,
     input: &Input,
-    kind: RotationKind,
+    protocol: Option<Protocol>,
     singbox: &impl SingBox,
 ) -> Result<RotationPlan> {
-    if let Some(identity) = kind.identity() {
-        return identities(configs, inventory, input, identity, singbox);
+    let protocols: Vec<_> = Protocol::ALL
+        .into_iter()
+        .filter(|candidate| protocol.is_none_or(|protocol| protocol == *candidate))
+        .collect();
+    // Refuse ambiguity before generating anything.
+    for protocol in &protocols {
+        inventory.ensure_unambiguous(*protocol)?;
     }
-    match kind {
-        RotationKind::VlessRealityShortId => {
-            protocol::vless::short_ids(configs, inventory, input, singbox)
-        }
-        RotationKind::VlessRealityKeypair => {
-            protocol::vless::keypair(configs, inventory, input, singbox)
-        }
-        RotationKind::Hysteria2ObfsPassword => {
-            protocol::hysteria2::obfs_password(configs, inventory, input, singbox)
-        }
-        _ => unreachable!("identity rotations handled above"),
-    }
-}
-
-/// Compose type-wide rotations against one original inventory. No intermediate
-/// config is written or rediscovered; the caller validates/applies the union once.
-pub fn rotation_by_type(
-    configs: &ConfigSet,
-    inventory: &Inventory,
-    input: &Input,
-    protocol: Protocol,
-    only: Option<RotationMaterial>,
-    singbox: &impl SingBox,
-) -> Result<RotationPlan> {
-    let kind = only
-        .map(|material| {
-            material.kind(protocol).with_context(|| {
-                format!(
-                    "--only {material:?} is not supported for --type {}",
-                    protocol.name()
-                )
-            })
-        })
-        .transpose()?;
-    let client_selectable = kind
-        .is_some_and(|kind| kind.identity().is_some() || kind == RotationKind::VlessRealityShortId);
-    ensure!(
-        client_selectable || (input.client.is_empty() && input.client_tag.is_empty()),
-        "all-material and service-wide rotations reject --client and --outbound-tag; supply all client configs with --clients and narrow with --inbound-tag, or use --only uuid/password/reality-short-id"
-    );
-    inventory.ensure_unambiguous(protocol)?;
-    if let Some(identity) = kind.and_then(RotationKind::identity) {
-        return identities(configs, inventory, input, identity, singbox);
-    }
-    let mut combined = RotationPlan::new(OperationKind::RotateType(protocol));
-    if only.is_none() {
-        let identity = match protocol {
-            Protocol::Vless => IdentityKind::VlessUuid,
-            Protocol::Hysteria2 => IdentityKind::Hysteria2Password,
-        };
-        combined.append(identities(configs, inventory, input, identity, singbox)?);
-    }
-    let wants = |candidate| kind.is_none_or(|kind| kind == candidate);
+    let selected = |service: &ServiceBinding| {
+        service
+            .clients()
+            .any(|client| client_selected(client, configs, input))
+    };
+    let mut combined = RotationPlan::new(OperationKind::Rotate);
     // A shared secret is generated once per inbound, not once per outbound.
     let mut generated_shared = BTreeSet::new();
-    for service in &inventory.services {
-        if service.protocol != protocol
-            || !service
-                .clients()
-                .any(|client| client_selected(client, configs, input))
+    for protocol in protocols {
+        if !inventory
+            .services
+            .iter()
+            .any(|service| service.protocol == protocol && selected(service))
         {
             continue;
         }
-        let mut parts = Vec::new();
-        match protocol {
-            Protocol::Vless => {
-                if !protocol::vless::reality_enabled(configs, &service.inbound)
-                    || !service.clients().any(|client| {
-                        protocol::vless::reality_enabled(configs, client)
-                            && client_selected(client, configs, input)
-                    })
-                {
-                    continue;
-                }
-                if wants(RotationKind::VlessRealityKeypair) {
-                    parts.push(protocol::vless::keypair_for_service(
-                        configs, service, singbox,
-                    )?);
-                }
-                if wants(RotationKind::VlessRealityShortId) {
+        combined.append(identities(configs, inventory, input, protocol, singbox)?);
+        for service in &inventory.services {
+            if service.protocol != protocol || !selected(service) {
+                continue;
+            }
+            let whole = service
+                .clients()
+                .all(|client| client_selected(client, configs, input));
+            let mut parts = Vec::new();
+            let mut kept = None;
+            match protocol {
+                Protocol::Vless => {
+                    if !protocol::vless::reality_enabled(configs, &service.inbound)
+                        || !service.clients().any(|client| {
+                            protocol::vless::reality_enabled(configs, client)
+                                && client_selected(client, configs, input)
+                        })
+                    {
+                        continue;
+                    }
+                    if whole {
+                        parts.push(protocol::vless::keypair_for_service(
+                            configs, service, singbox,
+                        )?);
+                    } else {
+                        kept = Some("Reality keypair");
+                    }
                     parts.push(protocol::vless::short_ids_for_service(
                         configs, service, input, singbox,
                     )?);
                 }
-            }
-            Protocol::Hysteria2 => {
-                let inbound = protocol::endpoint_value(configs, &service.inbound)?;
-                if wants(RotationKind::Hysteria2ObfsPassword)
-                    && inbound.get("obfs").is_some_and(|value| !value.is_null())
-                {
-                    parts.push(protocol::hysteria2::obfs_password_for_service(
-                        configs, service, singbox,
-                    )?);
+                Protocol::Hysteria2 => {
+                    let inbound = protocol::endpoint_value(configs, &service.inbound)?;
+                    if inbound.get("obfs").is_some_and(|value| !value.is_null()) {
+                        if whole {
+                            parts.push(protocol::hysteria2::obfs_password_for_service(
+                                configs, service, singbox,
+                            )?);
+                        } else {
+                            kept = Some("obfs password");
+                        }
+                    }
                 }
             }
-        }
-        for part in parts {
-            for edit in &part.edits {
-                // Client copies intentionally share the inbound's secret.
-                if configs.server_files.contains(&edit.target.file)
-                    && (edit.target.pointer.ends_with("/private_key")
-                        || edit.target.pointer.ends_with("/obfs/password"))
-                {
-                    let value = edit
-                        .new
-                        .as_ref()
-                        .and_then(Value::as_str)
-                        .context("generated shared secret must be a string")?;
-                    ensure!(
-                        generated_shared.insert(value.to_owned()),
-                        "generated shared secret collides with another inbound's replacement; retry"
-                    );
-                }
+            if let Some(secret) = kept {
+                combined.contexts.push(format!(
+                    "{} inbound={}: shared {secret} kept; it rotates only when every bound outbound is selected",
+                    protocol.name(),
+                    service.inbound.label()
+                ));
             }
-            combined.append(part);
+            for part in parts {
+                for edit in &part.edits {
+                    // Client copies intentionally share the inbound's secret.
+                    if configs.server_files.contains(&edit.target.file)
+                        && (edit.target.pointer.ends_with("/private_key")
+                            || edit.target.pointer.ends_with("/obfs/password"))
+                    {
+                        let value = edit
+                            .new
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .context("generated shared secret must be a string")?;
+                        ensure!(
+                            generated_shared.insert(value.to_owned()),
+                            "generated shared secret collides with another inbound's replacement; retry"
+                        );
+                    }
+                }
+                combined.append(part);
+            }
         }
     }
     ensure!(
         !combined.edits.is_empty(),
-        "no matching configured material with bound outbounds; use inspect to review bindings"
+        "no configured material with selected bound outbounds; use inspect to review bindings"
     );
     Ok(combined)
 }
 
+/// Rotate the user credentials of selected outbounds and every occurrence they share.
 pub fn identities(
     configs: &ConfigSet,
     inventory: &Inventory,
     input: &Input,
-    kind: IdentityKind,
+    protocol: Protocol,
     singbox: &impl SingBox,
 ) -> Result<RotationPlan> {
-    let protocol = kind.protocol();
     inventory.ensure_unambiguous(protocol)?;
-    let mut plan = RotationPlan {
-        operation: OperationKind::Rotate(kind.into()),
-        edits: Vec::new(),
-        contexts: Vec::new(),
-    };
+    let mut plan = RotationPlan::new(OperationKind::Rotate);
     // Refuse collisions with any supplied server/client identity, including other inbounds.
     let mut used = BTreeSet::new();
     for (file, doc) in &configs.documents {
@@ -225,9 +204,9 @@ pub fn identities(
             {
                 continue;
             }
-            let replacement = match kind {
-                IdentityKind::VlessUuid => singbox.generate_uuid()?,
-                IdentityKind::Hysteria2Password => singbox.generate_random_base64(32)?,
+            let replacement = match protocol {
+                Protocol::Vless => singbox.generate_uuid()?,
+                Protocol::Hysteria2 => singbox.generate_random_base64(32)?,
             };
             ensure!(
                 !replacement.is_empty(),
@@ -283,7 +262,12 @@ fn pointer_key(token: &str) -> Result<String> {
 
 impl RotationPlan {
     fn append(&mut self, other: Self) {
-        self.contexts.extend(other.contexts);
+        // Composed parts of one inbound repeat its summary line; show it once.
+        for context in other.contexts {
+            if !self.contexts.contains(&context) {
+                self.contexts.push(context);
+            }
+        }
         self.edits.extend(other.edits);
     }
 

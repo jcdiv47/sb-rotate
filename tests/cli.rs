@@ -53,6 +53,7 @@ case "$1" in
     else
       printf 'aW5kZXBlbmRlbnQtZ2VuZXJhdGVkLXNlY3JldA==\n'
     fi ;;
+  merge) cp "$4" "$2" ;;
   check)
     if [ "$TEST_FAIL_CHECK" = yes ]; then
       printf 'injected sing-box config validation error\n' >&2
@@ -169,24 +170,14 @@ fn type_rotation_previews_and_commits_all_reality_material_together() {
 }
 
 #[test]
-fn type_rotation_cli_rejects_invalid_combinations_and_unsafe_selection() {
+fn rotate_cli_rejects_removed_subset_flags_and_empty_selection() {
     for args in [
-        vec![],
         vec!["--only", "uuid"],
-        vec!["--type", "vless", "--kind", "vless-uuid"],
-        vec!["--kind", "vless-uuid", "--only", "uuid"],
-        vec!["--type", "vless", "--only", "password"],
-        vec!["--type", "hysteria2", "--only", "reality-keypair"],
-        vec!["--type", "vless", "--outbound-tag", "home"],
-        vec!["--type", "vless", "--client", "clients/phone.json"],
-        vec![
-            "--type",
-            "vless",
-            "--only",
-            "reality-keypair",
-            "--outbound-tag",
-            "home",
-        ],
+        vec!["--kind", "vless-uuid"],
+        vec!["--type", "vless", "--only", "uuid"],
+        vec!["--type", "trojan"],
+        vec!["--type", "hysteria2"],
+        vec!["--outbound-tag", "no-such-outbound"],
     ] {
         let fixture = Fixture::new("1.14.0");
         let originals = fixture.originals();
@@ -200,7 +191,39 @@ fn type_rotation_cli_rejects_invalid_combinations_and_unsafe_selection() {
 }
 
 #[test]
-fn type_only_and_outbound_tag_work_and_inspect_keeps_legacy_aliases() {
+fn repeated_client_directories_form_one_inventory() {
+    let fixture = Fixture::new("1.14.0");
+    fs::create_dir(fixture.root.path().join("devices")).unwrap();
+    let phone: Value =
+        serde_json::from_slice(&fs::read(fixture.root.path().join("clients/phone.json")).unwrap())
+            .unwrap();
+    fixture.write("devices/tablet.json", &phone);
+    let text = success(
+        fixture
+            .command("rotate")
+            .args(["--clients", "devices"])
+            .output()
+            .unwrap(),
+    );
+    assert!(text.contains("Updated 3 config file(s)"));
+    let phone: Value =
+        serde_json::from_slice(&fs::read(fixture.root.path().join("clients/phone.json")).unwrap())
+            .unwrap();
+    let tablet: Value =
+        serde_json::from_slice(&fs::read(fixture.root.path().join("devices/tablet.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        phone["outbounds"][0]["uuid"],
+        tablet["outbounds"][0]["uuid"]
+    );
+    assert_ne!(
+        phone["outbounds"][0]["uuid"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+}
+
+#[test]
+fn outbound_tag_selection_works_and_inspect_keeps_legacy_aliases() {
     let fixture = Fixture::new("1.14.0");
     fixture.enable_reality();
     fixture.write(
@@ -213,14 +236,7 @@ fn type_only_and_outbound_tag_work_and_inspect_keeps_legacy_aliases() {
     let text = success(
         fixture
             .command("plan")
-            .args([
-                "--type",
-                "vless",
-                "--only",
-                "uuid",
-                "--outbound-tag",
-                "home",
-            ])
+            .args(["--type", "vless", "--outbound-tag", "home"])
             .output()
             .unwrap(),
     );
@@ -257,8 +273,6 @@ fn type_only_and_outbound_tag_work_and_inspect_keeps_legacy_aliases() {
             "clients",
             "--type",
             "vless",
-            "--only",
-            "uuid",
             "--sing-box",
             "./sing-box-test",
         ])
@@ -283,14 +297,65 @@ fn type_rotation_validation_failure_keeps_all_original_material() {
 }
 
 #[test]
+fn build_sudo_runs_root_installs_only_after_every_target_passes() {
+    let fixture = Fixture::new("1.14.0");
+    let root = fixture.root.path();
+    fs::create_dir(root.join("pub")).unwrap();
+    fixture.write(
+        "build.json",
+        &json!({"publish_dir": "pub", "targets": {
+        "phone": {"fragments": ["clients/phone.json"], "publish_as": "phone-token.json"}}}),
+    );
+    let bin = root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(
+        bin.join("sudo"),
+        "#!/bin/sh\nprintf 'sudo %s\\n' \"$*\" >> \"$TEST_LOG\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("sudo"), fs::Permissions::from_mode(0o700)).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_sb-rotate"))
+            .current_dir(root)
+            .env("SING_BOX", root.join("sing-box-test"))
+            .env("TEST_LOG", root.join("invocations"))
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .args(["build", "--manifest", "build.json"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(
+        !run(&["--sudo"]).status.success(),
+        "--sudo requires --publish"
+    );
+    let text = success(run(&["--publish", "--sudo"]));
+    assert!(text.contains("phone-token.json"));
+    let log = fixture.log();
+    let installs: Vec<_> = log
+        .lines()
+        .filter(|line| line.starts_with("sudo "))
+        .collect();
+    assert_eq!(installs.len(), 1);
+    assert!(installs[0].starts_with("sudo install -o root -g root -m 644 "));
+    assert!(installs[0].ends_with("pub/phone-token.json"));
+    // Installs run only after merging and validation.
+    let check = log.find("check -c").unwrap();
+    assert!(log.find("sudo install").unwrap() > check);
+    assert!(
+        !root.join("pub/phone-token.json").exists(),
+        "sb-rotate itself writes nothing there"
+    );
+}
+
+#[test]
 fn plan_runs_version_then_generator_and_never_writes_or_checks() {
     let fixture = Fixture::new("1.14.0");
     let originals = fixture.originals();
-    let output = fixture
-        .command("plan")
-        .args(["--kind", "vless-uuid"])
-        .output()
-        .unwrap();
+    let output = fixture.command("plan").output().unwrap();
     let text = success(output);
     assert!(text.contains("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
     assert!(text.contains("Preview only"));
@@ -301,13 +366,7 @@ fn plan_runs_version_then_generator_and_never_writes_or_checks() {
 #[test]
 fn rotate_uses_generated_uuid_and_checks_before_success() {
     let fixture = Fixture::new("1.14.0");
-    let text = success(
-        fixture
-            .command("rotate")
-            .args(["--kind", "vless-uuid"])
-            .output()
-            .unwrap(),
-    );
+    let text = success(fixture.command("rotate").output().unwrap());
     assert!(text.contains("Updated 2 config file(s)"));
     for bytes in fixture.originals() {
         let text = String::from_utf8(bytes).unwrap();
@@ -330,7 +389,6 @@ fn failing_validator_exits_nonzero_without_replacing_configs() {
     let originals = fixture.originals();
     let output = fixture
         .command("rotate")
-        .args(["--kind", "vless-uuid"])
         .env("TEST_FAIL_CHECK", "yes")
         .output()
         .unwrap();
@@ -448,13 +506,7 @@ fn passwords_are_masked_in_cli_and_use_singbox_base64_generator() {
         "clients/phone.json",
         &json!({"outbounds": [{"type": "hysteria2", "password": "old-password"}]}),
     );
-    let text = success(
-        fixture
-            .command("plan")
-            .args(["--kind", "hysteria2-password"])
-            .output()
-            .unwrap(),
-    );
+    let text = success(fixture.command("plan").output().unwrap());
     assert!(text.contains("********"));
     assert!(!text.contains("old-password"));
     assert!(!text.contains("aW5kZXBlbmRlbnQtZ2VuZXJhdGVkLXNlY3JldA=="));
@@ -463,34 +515,19 @@ fn passwords_are_masked_in_cli_and_use_singbox_base64_generator() {
 
 #[test]
 fn reality_keypair_and_hex_generators_are_wired_to_cli_with_safe_output() {
-    for (kind, command) in [
-        ("vless-reality-keypair", "generate reality-keypair"),
-        ("vless-reality-short-id", "generate rand 8 --hex"),
-    ] {
-        let fixture = Fixture::new("1.14.0");
-        fixture.enable_reality();
-        let originals = fixture.originals();
-        let output = success(
-            fixture
-                .command("plan")
-                .args(["--kind", kind])
-                .output()
-                .unwrap(),
-        );
-        assert_eq!(fixture.originals(), originals);
-        assert!(!output.contains("old-private"));
-        assert!(!output.contains(&URL_SAFE_NO_PAD.encode([1u8; 32])));
-        assert!(!output.contains("0123456789abcdef"));
+    let fixture = Fixture::new("1.14.0");
+    fixture.enable_reality();
+    let originals = fixture.originals();
+    let output = success(fixture.command("plan").output().unwrap());
+    assert_eq!(fixture.originals(), originals);
+    assert!(!output.contains("old-private"));
+    assert!(!output.contains(&URL_SAFE_NO_PAD.encode([1u8; 32])));
+    assert!(!output.contains("0123456789abcdef"));
+    for command in ["generate reality-keypair", "generate rand 8 --hex"] {
         assert!(fixture.log().contains(command));
-        success(
-            fixture
-                .command("rotate")
-                .args(["--kind", kind])
-                .output()
-                .unwrap(),
-        );
-        assert_ne!(fixture.originals(), originals);
     }
+    success(fixture.command("rotate").output().unwrap());
+    assert_ne!(fixture.originals(), originals);
 }
 
 #[test]
@@ -520,12 +557,35 @@ fn set_dry_run_and_commit_never_generate_or_edit_the_server() {
 }
 
 #[test]
-fn cli_service_selectors_are_rejected_before_generating_keys() {
+fn outbound_selection_rotates_shared_keys_but_set_stays_service_wide() {
     let fixture = Fixture::new("1.14.0");
     fixture.enable_reality();
+    let originals = fixture.originals();
+    success(
+        fixture
+            .command("rotate")
+            .args(["--client-tag", "home"])
+            .output()
+            .unwrap(),
+    );
+    assert!(fixture.log().contains("generate reality-keypair"));
+    let client: Value = serde_json::from_slice(&fixture.originals()[1]).unwrap();
+    assert_ne!(
+        client["outbounds"][0]["tls"]["reality"]["public_key"],
+        "old-public"
+    );
+    let rotated = fixture.originals();
+    assert_ne!(rotated, originals);
     let output = fixture
-        .command("rotate")
-        .args(["--kind", "vless-reality-keypair", "--client-tag", "home"])
+        .command("set")
+        .args([
+            "--kind",
+            "server",
+            "--value",
+            "new.example",
+            "--client-tag",
+            "home",
+        ])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -534,7 +594,7 @@ fn cli_service_selectors_are_rejected_before_generating_keys() {
             .unwrap()
             .contains("service-wide")
     );
-    assert_eq!(fixture.log(), "version\n");
+    assert_eq!(fixture.originals(), rotated);
 }
 
 fn wait_for_child(mut child: Child) -> Output {
@@ -704,11 +764,7 @@ fn recover_cli_restores_an_interrupted_journal_without_singbox() {
     fs::write(journal.join("started"), b"1\n").unwrap();
     fs::rename(&staged[0].1, &staged[0].0).unwrap();
     let interrupted = fixture.originals();
-    let blocked = fixture
-        .command("rotate")
-        .args(["--kind", "vless-uuid"])
-        .output()
-        .unwrap();
+    let blocked = fixture.command("rotate").output().unwrap();
     assert!(!blocked.status.success());
     assert!(
         String::from_utf8(blocked.stderr)

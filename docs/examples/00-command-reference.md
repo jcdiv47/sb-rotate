@@ -1,37 +1,37 @@
 # Example Command Reference
 
-## Preferred type-driven workflow
+## Rotation workflow
 
 ```bash
-# --clients is a local directory of independent sing-box client configs.
-# Each file can contain several outbounds of the same type.
-sb-rotate inspect --server ./server.json --clients ./clients/ --type vless
-sb-rotate plan --server ./server.json --clients ./clients/ --type vless
-sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
+# --clients is a local directory of sing-box client configs; repeat it for
+# configs split across directories. Each file can contain several outbounds.
+sb-rotate inspect --server ./server.json --clients ./clients/
+sb-rotate plan --server ./server.json --clients ./clients/
+sb-rotate rotate --server ./server.json --clients ./clients/
 
-# All matched Hysteria2 user passwords and configured obfs passwords.
+# Only VLESS (UUIDs, Reality keypairs, short IDs) or only Hysteria2
+# (user passwords, obfs passwords).
+sb-rotate rotate --server ./server.json --clients ./clients/ --type vless
 sb-rotate rotate --server ./server.json --clients ./clients/ --type hysteria2
 
 # One inbound, including its configured shared key material.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --type vless --inbound-tag vless-home
+  --inbound-tag vless-home
 
-# Only UUIDs selected through the home outbound in phone.json.
-# Every supplied occurrence sharing its user credential rotates together.
+# Credentials of the home outbound in phone.json only: its user credential
+# (everywhere it is shared) and its short ID. Shared keys and other clients
+# stay unchanged.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --type vless --only uuid \
   --client ./clients/phone.json --outbound-tag home
 
-# Keypairs across every matched Reality inbound.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --type vless --only reality-keypair
+# Client configs assembled from fragments in several directories.
+sb-rotate rotate --server ./server.json \
+  --clients ./clients/shared/ --clients ./clients/devices/
 ```
 
-`--type vless` includes UUIDs and enabled Reality keypairs/short IDs; it does not rotate certificates or enable optional features. All-material/keypair/obfs rotation rejects client/outbound selectors; use `--inbound-tag` to narrow it instead. Plans span all matching inbounds and are applied as one validated, recoverable transaction. Unmatched users/outbounds and unattributed accepted short IDs are retained. Nothing is remotely deployed or reloaded.
+Rotation covers every supported credential of the selected outbounds, plus the shared keypair/obfs password of inbounds whose bound outbounds are all selected; individual materials cannot be rotated on their own. It does not rotate certificates or enable optional features. Plans span all matching inbounds and are applied as one validated, recoverable transaction. Unmatched users/outbounds and unattributed accepted short IDs are retained; the plan warns when a rotated keypair or obfs password also affects server users without a supplied client. Nothing is remotely deployed or reloaded.
 
-Allowed `--only` values are `uuid`, `reality-keypair`, `reality-short-id` for VLESS, and `password`, `obfs-password` for Hysteria2. `--client-config-dir` aliases `--clients`.
-
-The commands below also demonstrate the compatible legacy interface. `--kind` cannot be combined with `--type`/`--only`; its service-level operations still require one matching inbound. Prefer `--outbound-tag` over its alias `--client-tag`, and `inspect --type` over its alias `--protocol`.
+`--client-config-dir` aliases `--clients`. Prefer `--outbound-tag` over its alias `--client-tag`, and `inspect --type` over its alias `--protocol`.
 
 ## Inspect
 
@@ -55,116 +55,34 @@ sb-rotate inspect --server ./server.json --client ./phone.json
 ## Plan
 
 ```bash
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
+sb-rotate plan --server ./server.json --clients ./clients/
 
 sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id
-
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-reality-keypair \
-  --inbound-tag vless-home
-
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password
-
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind hysteria2-obfs-password \
-  --inbound-tag hy2-home
+  --type hysteria2 --inbound-tag hy2-home
 ```
 
-## Rotate VLESS UUIDs
-
-```bash
-# Rotate every matched VLESS identity.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
-
-# Select an identity through one client file.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --client ./clients/phone.json
-
-# Select by outbound tag.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --client-tag home
-
-# Narrow by file and tag.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --client ./clients/phone.json \
-  --client-tag home
-
-# Select identities used by several client files.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --client ./clients/phone.json \
-  --client ./clients/laptop.json
-
-# Narrow to one server service.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid \
-  --inbound-tag vless-home
-```
-
-If several outbounds share the selected UUID, the whole UUID identity binding rotates together.
-
-## Rotate Reality short IDs
+## Rotate selected outbounds
 
 ```bash
 # One client file.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
   --client ./clients/phone.json
+
+# By outbound tag, across every supplied client.
+sb-rotate rotate --server ./server.json --clients ./clients/ \
+  --outbound-tag home
 
 # One outbound inside a multi-outbound client file.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json \
-  --client-tag home
+  --client ./clients/phone.json --outbound-tag home
 
-# Several clients; each gets a different new short ID.
+# Several clients; each selected Reality outbound gets a different short ID.
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
-  --client ./clients/phone.json \
-  --client ./clients/laptop.json \
-  --client-tag home
+  --client ./clients/phone.json --client ./clients/laptop.json \
+  --outbound-tag home
 ```
 
-## Rotate Reality keypair
-
-```bash
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-keypair \
-  --inbound-tag vless-home
-```
-
-## Rotate Hysteria2 authentication passwords
-
-```bash
-# Every matched identity.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password
-
-# Identity selected through one client.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password \
-  --client ./clients/phone.json
-
-# One Hysteria2 service.
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-password \
-  --inbound-tag hy2-home
-```
-
-## Rotate Hysteria2 obfs password
-
-```bash
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind hysteria2-obfs-password \
-  --inbound-tag hy2-home
-```
+If several outbounds share a selected user credential, the whole identity binding rotates together. A Reality keypair or Hysteria2 obfs password is shared by its inbound, so it rotates only when every bound outbound of that inbound is selected; otherwise the plan notes that it was kept. To cut off one device, rotating its own credentials is enough.
 
 ## Change service address
 
@@ -217,6 +135,21 @@ sb-rotate set --server ./server.json --clients ./clients/ \
   --value hy2-new.example.com
 ```
 
+## Build fragment-based client configs
+
+```bash
+# All targets in the manifest, then publish them as subscriptions.
+sb-rotate build --manifest ./clients/build.json
+sb-rotate build --manifest ./clients/build.json --publish
+# Root-owned subscription files: sudo-install every output after all builds pass.
+sb-rotate build --manifest ./clients/build.json --publish --sudo
+
+# Selected targets.
+sb-rotate build --manifest ./clients/build.json phone laptop
+```
+
+See [the CLI specification](../spec/06-cli.md#build) for the manifest format.
+
 ## Validate
 
 ```bash
@@ -262,11 +195,9 @@ SING_BOX=/opt/sing-box/bin/sing-box \
 ```bash
 sb-rotate inspect --server ./server.json --clients ./clients/
 
-sb-rotate plan --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
+sb-rotate plan --server ./server.json --clients ./clients/
 
-sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-uuid
+sb-rotate rotate --server ./server.json --clients ./clients/
 
 sb-rotate check --server ./server.json --clients ./clients/
 ```

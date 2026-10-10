@@ -1,5 +1,6 @@
 pub mod apply;
 pub mod binding;
+pub mod build;
 pub mod cli;
 pub mod config;
 mod fsutil;

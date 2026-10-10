@@ -2,6 +2,8 @@
 
 Reality short IDs are different from VLESS UUIDs because the server accepts a list while each client uses one value.
 
+Short IDs always rotate together with the selected outbounds' UUIDs, and with the inbound's Reality keypair when every bound outbound is selected. This example follows only the short IDs.
+
 Initial state:
 
 ```text
@@ -18,13 +20,13 @@ tablet:
   bbbbbbbbbbbbbbbb
 ```
 
-Rotate only the phone:
+Rotate the phone:
 
 ```bash
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
+  --type vless \
   --client ./clients/phone.json \
-  --client-tag home
+  --outbound-tag home
 ```
 
 Suppose the new ID is `cccccccccccccccc`.
@@ -51,9 +53,9 @@ Now rotate the laptop as well:
 
 ```bash
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
+  --type vless \
   --client ./clients/laptop.json \
-  --client-tag home
+  --outbound-tag home
 ```
 
 If the laptop receives `dddddddddddddddd`, the server can remove `aaaaaaaaaaaaaaaa` because none of the supplied bound clients still references it:
@@ -69,10 +71,10 @@ Rotate phone and laptop in one command:
 
 ```bash
 sb-rotate rotate --server ./server.json --clients ./clients/ \
-  --kind vless-reality-short-id \
+  --type vless \
   --client ./clients/phone.json \
   --client ./clients/laptop.json \
-  --client-tag home
+  --outbound-tag home
 ```
 
 Each selected outbound receives its own newly generated short ID.

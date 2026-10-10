@@ -8,7 +8,7 @@ use crate::{
     plan::{OperationKind, RotationPlan},
 };
 
-use super::{endpoint_value, one_service, service_plan};
+use super::{endpoint_value, one_service, service_plan, warn_unsupplied_users};
 
 fn port(value: &str) -> Result<u16> {
     ensure!(
@@ -61,9 +61,10 @@ pub fn set(
     value: &str,
 ) -> Result<RotationPlan> {
     let protocol = (kind == PropertyKind::ServerPorts).then_some(Protocol::Hysteria2);
-    let service = one_service(configs, inventory, input, protocol, false, |_| true)?;
+    let service = one_service(inventory, input, protocol)?;
     let value = property_value(kind, value)?;
     let mut plan = service_plan(service, OperationKind::Set(kind));
+    warn_unsupplied_users(&mut plan, service, "connection settings");
     for client in service.clients() {
         let outbound = endpoint_value(configs, client)?;
         let field = match kind {
