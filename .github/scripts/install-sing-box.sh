@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
-# Usage: install-sing-box.sh TAG [SHA256]
-# Downloads the linux-amd64 sing-box release TAG, verifies it against SHA256
-# (or the digest GitHub records for the asset), and exports SING_BOX.
+# Usage: install-sing-box.sh TAG SHA256
+# Downloads the linux-amd64 sing-box release TAG, verifies it against SHA256,
+# and exports SING_BOX.
 set -euo pipefail
 
 tag="$1"
-expected="${2:-}"
+expected="$2"
 name="sing-box-${tag#v}-linux-amd64.tar.gz"
 archive="$RUNNER_TEMP/sing-box.tar.gz"
-
-if [[ -z "$expected" ]]; then
-  expected="$(gh api "repos/SagerNet/sing-box/releases/tags/$tag" \
-    --jq ".assets[] | select(.name == \"$name\") | .digest")"
-  expected="${expected#sha256:}"
-  [[ -n "$expected" ]] || { echo "No digest published for $name" >&2; exit 1; }
-fi
 
 curl --fail --location --retry 3 \
   "https://github.com/SagerNet/sing-box/releases/download/$tag/$name" \
